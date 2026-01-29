@@ -12,7 +12,6 @@ BTC 15分钟布林线趋势监控脚本（2025版 - 主升浪多，无去重）
 
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime
 
 # ==================== 配置区 ====================
@@ -60,11 +59,6 @@ def add_technical_indicators(df):
 
     # 基础指标
     df["return"] = df["close"].pct_change() * 100
-    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
-    df["ema_cross_up"] = (df["ema12"].shift(1) <= df["ema21"].shift(1)) & (df["ema12"] > df["ema21"])
-    df["ema_cross_dn"] = (df["ema12"].shift(1) >= df["ema21"].shift(1)) & (df["ema12"] < df["ema21"])
-    df["trend_ema"] = np.where(df["ema12"] > df["ema21"], 1, -1)
 
     # BOLL 25,2（核心）
     df["sma25"] = df["close"].rolling(25).mean()
@@ -118,7 +112,7 @@ def trend_alert(df_15m):
 
     # 构建并发送消息（只要有信号就发，无去重）
     if signals:
-        msg = f"【15分钟布林主升浪多趋势报告】{title}\n\n"
+        msg = f"【15分钟多头信号】{title} \n\n"
         msg += f"当前方向：{boll_direction}\n"
         msg += f"价格：${close:.0f} | 中轨：${latest['mid']:.0f}\n"
         msg += "──────────────\n"

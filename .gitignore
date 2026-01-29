@@ -1,0 +1,6 @@
+/venv
+.idea
+*.log
+*.txt
+.vscode/
+wallets.json

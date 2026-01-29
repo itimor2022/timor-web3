@@ -12,7 +12,6 @@ BTC 15分钟布林线趋势监控脚本（2025版 - 只做空，无去重）
 
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime
 
 # ==================== 配置区 ====================
@@ -60,11 +59,6 @@ def add_technical_indicators(df):
 
     # 基础指标
     df["return"] = df["close"].pct_change() * 100
-    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
-    df["ema_cross_up"] = (df["ema12"].shift(1) <= df["ema21"].shift(1)) & (df["ema12"] > df["ema21"])
-    df["ema_cross_dn"] = (df["ema12"].shift(1) >= df["ema21"].shift(1)) & (df["ema12"] < df["ema21"])
-    df["trend_ema"] = np.where(df["ema12"] > df["ema21"], 1, -1)
 
     # BOLL 25,2（核心）
     df["sma25"] = df["close"].rolling(25).mean()
@@ -72,15 +66,6 @@ def add_technical_indicators(df):
     df["upper"] = df["sma25"] + 2 * df["std25"]
     df["lower"] = df["sma25"] - 2 * df["std25"]
     df["mid"] = df["sma25"]
-
-    # 射击之星（上影线长，实体小，暗示空头反转）
-    df["upper_shadow"] = (df["high"] - df[["open", "close"]].max(axis=1)) / (df["high"] - df["low"] + 1e-8)
-    df["is_shooting_star"] = (df["upper_shadow"] > 0.65) & (df["close"] < df["open"]) & (
-            abs(df["close"] - df["open"]) / (df["high"] - df["low"] + 1e-8) < 0.3)
-
-    # 放量
-    df["vol_ma20"] = df["vol"].rolling(20).mean()
-    df["vol_spike"] = df["vol"] > df["vol_ma20"] * 1.5
 
     # 阴线/阳线
     df["is_bear"] = df["close"] < df["open"]
@@ -167,34 +152,21 @@ def trend_alert(df_15m):
             hanging_above = latest["low"] > latest["upper"] * 1.002  # 轻微容差
 
             if upper_dominant and hanging_above and latest["is_bear"]:
-                strength = upper_half / (prev["high"] - prev["low"] + 1e-8)
                 signals.append(
                     f"⚠️ 信号3：阴线高位悬空 → 前大阳诱多突破上轨 → 顶部反转陷阱"
                 )
 
     # ──────────────────────────────────────────────
-    # 辅助确认（可选叠加，不单独成信号，但可加强描述）
-    # ──────────────────────────────────────────────
-    extra_tags = []
-    if latest["is_shooting_star"] and latest["vol_spike"]:
-        extra_tags.append("射击之星+放量")
-    if latest["ema_cross_dn"]:
-        extra_tags.append("EMA死叉")
-
-    # ──────────────────────────────────────────────
     # 整合发送（所有信号放一条消息）
     # ──────────────────────────────────────────────
     if signals:
-        msg = f"<b>【15分钟布林空头信号警报】{title}</b>\n\n"
+        msg = f"【15分钟空头信号】{title}\n\n"
         msg += f"当前方向：{boll_direction}\n"
         msg += f"现价：${close:,.0f}　中轨：${latest['mid']:,.0f}　上轨：${latest['upper']:,.0f}\n"
         msg += "──────────────\n"
 
         for sig in signals:
             msg += f"• {sig}\n"
-
-        if extra_tags:
-            msg += "\n辅助确认： " + " / ".join(extra_tags) + "\n"
 
         send_message(msg)
         print(f"【{datetime.now().strftime('%H:%M')}】发送空头警报！找到 {len(signals)} 个信号")

@@ -10,7 +10,6 @@ BTC 15分钟布林线趋势监控脚本（2025版 - 只做多，无去重）
 
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime
 
 # ==================== 配置区 ====================
@@ -58,11 +57,6 @@ def add_technical_indicators(df):
 
     # 基础指标
     df["return"] = df["close"].pct_change() * 100
-    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
-    df["ema_cross_up"] = (df["ema12"].shift(1) <= df["ema21"].shift(1)) & (df["ema12"] > df["ema21"])
-    df["ema_cross_dn"] = (df["ema12"].shift(1) >= df["ema21"].shift(1)) & (df["ema12"] < df["ema21"])
-    df["trend_ema"] = np.where(df["ema12"] > df["ema21"], 1, -1)
 
     # BOLL 25,2（核心）
     df["sma25"] = df["close"].rolling(25).mean()
@@ -70,10 +64,6 @@ def add_technical_indicators(df):
     df["upper"] = df["sma25"] + 2 * df["std25"]
     df["lower"] = df["sma25"] - 2 * df["std25"]
     df["mid"] = df["sma25"]
-
-    # 放量
-    df["vol_ma20"] = df["vol"].rolling(20).mean()
-    df["vol_spike"] = df["vol"] > df["vol_ma20"] * 1.5
 
     # 阳线/阴线
     df["is_bull"] = df["close"] > df["open"]
@@ -159,7 +149,7 @@ def trend_alert(df_15m):
     # 发送与打印
     # ──────────────────────────────────────────────
     if signals:
-        msg = f"<b>【15分钟布林多头信号】{title}</b>\n\n"
+        msg = f"【15分钟多头信号】{title} \n\n"
         msg += f"当前方向：{boll_direction}\n"
         msg += f"现价：${close:,.0f}　中轨：${latest['mid']:,.0f}\n"
         msg += "──────────────\n"

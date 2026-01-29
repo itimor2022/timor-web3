@@ -1,0 +1,10 @@
+[
+  {
+    "address": "0xAAA...",
+    "private_key": "0xbbb..."
+  },
+  {
+    "address": "0xCCC...",
+    "private_key": "0xddd..."
+  }
+]
