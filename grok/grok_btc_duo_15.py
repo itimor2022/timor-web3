@@ -5,6 +5,7 @@ BTC 15分钟布林线趋势监控脚本（2025版 - 只做多，无去重）
 - 只检测多头信号
 - 信号1: 第一阳线上穿下轨，第二也是阳线，且第一阳线实体比上一根阴线实体大
 - 信号2: 2根连续阳线直接从下轨碰到中轨（第一根开盘低于下轨，最后一根收盘突破中轨）
+- 信号3：2根阳线实体突破上轨
 - 每次运行只要有信号就发送消息（无去重，适合实时监控）
 """
 
@@ -144,6 +145,17 @@ def trend_alert(df_15m):
         signals.append(
             f"🚀 信号2：连阳从下轨拉升至中轨上方（涨幅约 {distance_pct:.1f}%）"
         )
+
+    # ──────────────────────────────────────────────
+    # 信号3：2根阳线实体突破上轨，其中一个阳线上半部分（close - upper）是下半部分（upper - open）的2倍
+    # ──────────────────────────────────────────────
+    bull1_break = prev["is_bull"] and prev["open"] <= prev["upper"] < prev["close"]
+    bull2_break = latest["is_bull"] and latest["open"] <= latest["upper"] < latest["close"]
+    if prev["is_bull"] and latest["is_bull"] and (bull1_break or bull2_break):
+        cond_prev = (prev["close"] - prev["upper"]) >= 2 * (prev["upper"] - prev["open"])
+        cond_latest = (latest["close"] - latest["upper"]) >= 2 * (latest["upper"] - latest["open"])
+        if cond_prev or cond_latest:
+            signals.append(f"🚀2根阳线实体突破上轨 + 其中一根上半部分是下半部分的2倍 → 主升浪多信号")
 
     # ──────────────────────────────────────────────
     # 发送与打印
