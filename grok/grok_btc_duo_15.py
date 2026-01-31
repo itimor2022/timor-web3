@@ -1,174 +1,209 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟布林线趋势监控脚本（2025版 - 只做多，无去重）
-核心：以15分钟布林线（25,2）作为主要多头趋势判断依据
-- 只检测多头信号
-- 信号1：一根阴线之后出现2连阳，其中至少一根阳线实体上穿中轨
-- 信号2：2根连续阳线从下轨区域强势拉到中轨上方
-- 信号3：2根阳线实体突破上轨 + 其中一根上半部分 ≥ 下半部分2倍
-- 信号4：一根阴线之后出现2连阳，其中至少一根阳线实体上穿下轨
-- 每次运行只要有信号就发送消息（无去重，适合实时监控）
+BTC 15分钟布林线多头趋势监控脚本（2025优化版 - 只做多）
+核心逻辑：以15分钟布林带(25,2)为主的多头信号识别
+
+信号定义（更清晰版）：
+1. 阴线 → 2连阳，且至少1根阳线实体有效穿越中轨（或下轨）
+2. 连续2阳，从下轨区域（或贴近下轨）强势拉升站上中轨
+3. 连续2阳，至少1根实体突破上轨，且该K线上影线/实体比例较小（上攻意愿强）
+
+特点：
+- 无去重 → 适合实时推送或配合外部去重
+- 增加信号强度/位置描述
+- 改进Telegram消息排版
+- 加入简单重试机制
 """
 
 import requests
 import pandas as pd
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
-# ==================== 配置区 ====================
+# ==================== 配置 ====================
+TELEGRAM_TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 CHAT_ID = "-5068436114"
-TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
-BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
+OKX_BASE = "https://www.okx.com"
+SYMBOL = "BTC-USDT"
+BAR = "15m"
+LIMIT = 300
+
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 
-def send_message(msg):
-    url = f"{BASE_URL}/sendMessage"
+def send_telegram(msg, retry=2):
     payload = {
         "chat_id": CHAT_ID,
         "text": msg,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    try:
-        r = requests.get(url, params=payload, timeout=10)
-        if not r.json().get("ok"):
-            print("Telegram发送失败:", r.json())
-    except Exception as e:
-        print("发送异常:", e)
+    for attempt in range(retry + 1):
+        try:
+            r = requests.get(TELEGRAM_API, params=payload, timeout=10)
+            if r.json().get("ok"):
+                return True
+            print(f"Telegram发送失败: {r.text}")
+        except Exception as e:
+            print(f"发送异常 (第{attempt + 1}次): {e}")
+        if attempt < retry:
+            time.sleep(1.5)
+    return False
 
 
-def get_candles(instId="BTC-USDT", bar="15m", limit=300):
-    url = "https://www.okx.com/api/v5/market/candles"
-    params = {"instId": instId, "bar": bar, "limit": limit}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()["data"]
-        df = pd.DataFrame(data,
-                          columns=["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"])
-        df["ts"] = pd.to_datetime(df["ts"].astype(int), unit='ms') + pd.Timedelta(hours=7)  # 亚洲时间
-        df = df.astype({"open": float, "high": float, "low": float, "close": float, "vol": float})
-        df = df[["ts", "open", "high", "low", "close", "vol"]].sort_values("ts").reset_index(drop=True)
-        return df
-    except Exception as e:
-        print("获取K线失败:", e)
-        return pd.DataFrame()
+def fetch_klines(symbol=SYMBOL, bar=BAR, limit=LIMIT, retries=3):
+    url = f"{OKX_BASE}/api/v5/market/candles"
+    params = {"instId": symbol, "bar": bar, "limit": str(limit)}
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=12)
+            r.raise_for_status()
+            data = r.json()["data"]
+            if not data:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data,
+                              columns=["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"])
+            df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
+            df["ts"] = df["ts"] + timedelta(hours=7)  # 亚洲时区（可依需求调整）
+            df = df.astype({"open": float, "high": float, "low": float, "close": float, "vol": float})
+            df = df[["ts", "open", "high", "low", "close", "vol"]].sort_values("ts").reset_index(drop=True)
+            return df
+        except Exception as e:
+            print(f"获取K线失败 (第{attempt + 1}次): {e}")
+            if attempt < retries - 1:
+                time.sleep(2.5)
+    return pd.DataFrame()
 
 
-def add_technical_indicators(df):
+def enrich_indicators(df):
     if len(df) < 50:
         return df
 
-    df["return"] = df["close"].pct_change() * 100
+    # 布林带 25周期，2倍标准差（主流设置）
+    df["mid"] = df["close"].rolling(25).mean()
+    df["std"] = df["close"].rolling(25).std()
+    df["upper"] = df["mid"] + 2 * df["std"]
+    df["lower"] = df["mid"] - 2 * df["std"]
 
-    # BOLL 25,2
-    df["sma25"] = df["close"].rolling(25).mean()
-    df["std25"] = df["close"].rolling(25).std()
-    df["upper"] = df["sma25"] + 2 * df["std25"]
-    df["lower"] = df["sma25"] - 2 * df["std25"]
-    df["mid"] = df["sma25"]
-
-    # 阳/阴线
-    df["is_bull"] = df["close"] > df["open"]
-    df["is_bear"] = df["close"] < df["open"]
-    df["entity_size"] = abs(df["close"] - df["open"])
+    # K线性质
+    df["body"] = df["close"] - df["open"]
+    df["is_bull"] = df["body"] > 0
+    df["is_bear"] = df["body"] < 0
+    df["entity"] = abs(df["body"])
+    df["upper_wick"] = df["high"] - df[["open", "close"]].max(axis=1)
+    df["lower_wick"] = df[["open", "close"]].min(axis=1) - df["low"]
 
     return df
 
 
-def trend_alert(df_15m):
-    if df_15m.empty or len(df_15m) < 4:
-        return
+def detect_bull_signals(df):
+    if len(df) < 4:
+        return [], None
 
-    latest     = df_15m.iloc[-1]   # 第二根阳线
-    prev       = df_15m.iloc[-2]   # 第一根阳线
-    prev_prev  = df_15m.iloc[-3]   # 阴线
-
-    close = latest["close"]
-    ts = latest["ts"].strftime("%m-%d %H:%M")
-    title = f"15m BTC-USDT - {ts}"
-
-    boll_direction = "震荡"
-    if close > latest["mid"]:
-        boll_direction = "多头方向"
-    elif close < latest["mid"]:
-        boll_direction = "空头方向"
+    latest = df.iloc[-1]  # 当前最新K（可能是正在形成的）
+    prev = df.iloc[-2]  # 前一根
+    prev2 = df.iloc[-3]  # 前前一根
 
     signals = []
+    price_info = {
+        "close": latest["close"],
+        "mid": latest["mid"],
+        "upper": latest["upper"],
+        "lower": latest["lower"],
+        "ts": latest["ts"].strftime("%m-%d %H:%M"),
+    }
 
-    # ──────────────────────────────────────────────
-    # 信号1：阴线后2连阳 + 至少一根上穿中轨
-    # ──────────────────────────────────────────────
-    is_prev_bear = prev_prev["is_bear"]
-    two_bulls = prev["is_bull"] and latest["is_bull"]
-    cross_mid_prev   = (prev["open"] <= prev["mid"] < prev["close"])
-    cross_mid_latest = (latest["open"] <= latest["mid"] < latest["close"])
-    has_mid_cross = cross_mid_prev or cross_mid_latest
+    # 当前整体位置判断
+    pos_desc = "中轨附近震荡"
+    if latest["close"] > latest["upper"]:
+        pos_desc = "<b>站上上轨</b>（强势）"
+    elif latest["close"] > latest["mid"]:
+        pos_desc = "站上中轨（多头区间）"
+    elif latest["close"] < latest["lower"]:
+        pos_desc = "<b>跌破下轨</b>（弱势）"
+    else:
+        pos_desc = "位于中下轨之间"
 
-    if is_prev_bear and two_bulls and has_mid_cross:
-        strength = "（最新阳线中轨突破力度较强）" if cross_mid_latest else ""
-        signals.append(f"🚀 信号1：阴线后2连阳 + 至少一根上穿中轨 {strength}")
+    # ─── 信号1 ─── 阴线后出现2连阳 + 至少1根有效穿越中轨/下轨 ───
+    if prev2["is_bear"] and prev["is_bull"] and latest["is_bull"]:
+        cross_mid = (
+                (prev["open"] <= prev["mid"] < prev["close"]) or
+                (latest["open"] <= latest["mid"] < latest["close"])
+        )
+        cross_lower = (
+                (prev["low"] <= prev["lower"] < prev["close"]) or
+                (latest["low"] <= latest["lower"] < latest["close"])
+        )
 
-    # ──────────────────────────────────────────────
-    # 信号2：连阳从下轨拉到中轨上方（原版）
-    # ──────────────────────────────────────────────
-    touched_lower_zone = prev["low"] <= prev["lower"] * 1.005
-    break_mid = latest["close"] > latest["mid"]
+        if cross_mid:
+            who = "最新K" if latest["open"] <= latest["mid"] < latest["close"] else "前一根"
+            signals.append(f"信号1：阴线后2连阳 + <b>{who}实体上穿中轨</b>")
 
-    if prev["is_bull"] and latest["is_bull"] and touched_lower_zone and break_mid:
-        distance_pct = (latest["close"] - prev["low"]) / prev["low"] * 100
-        signals.append(f"🚀 信号2：连阳从下轨拉升至中轨上方（涨幅约 {distance_pct:.1f}%）")
+        if cross_lower and not cross_mid:  # 避免重复报
+            who = "最新K" if latest["low"] <= latest["lower"] < latest["close"] else "前一根"
+            signals.append(f"信号1：阴线后2连阳 + <b>{who}实体上穿下轨</b>")
 
-    # ──────────────────────────────────────────────
-    # 信号3：2根阳线突破上轨 + 上半身≥下半身2倍（原版）
-    # ──────────────────────────────────────────────
+    # ─── 信号2 ─── 两根阳线从下轨区域拉升站上中轨 ───
+    near_lower = prev["low"] <= prev["lower"] * 1.003  # 允许轻微超出
+    stand_mid = latest["close"] > latest["mid"] + latest["std"] * 0.1  # 站得稍微扎实一点
+
+    if prev["is_bull"] and latest["is_bull"] and near_lower and stand_mid:
+        rise_pct = (latest["close"] - prev["low"]) / prev["low"] * 100
+        signals.append(f"信号2：下轨区域起涨 → 连阳站上中轨 <b>(涨幅约{rise_pct:.1f}%)</b>")
+
+    # ─── 信号3 ─── 两阳至少一阳突破上轨 + 上攻形态（上影线不宜过长） ───
     bull1_break = prev["is_bull"] and prev["open"] <= prev["upper"] < prev["close"]
     bull2_break = latest["is_bull"] and latest["open"] <= latest["upper"] < latest["close"]
+
     if prev["is_bull"] and latest["is_bull"] and (bull1_break or bull2_break):
-        cond_prev = (prev["close"] - prev["upper"]) >= 2 * (prev["upper"] - prev["open"] + 1e-8)
-        cond_latest = (latest["close"] - latest["upper"]) >= 2 * (latest["upper"] - latest["open"] + 1e-8)
-        if cond_prev or cond_latest:
-            signals.append("🚀 信号3：2根阳线实体突破上轨 + 其中一根上半部分≥下半部分2倍 → 主升浪")
+        # 上半部分（突破后继续冲高） vs 下半部分（开盘到上轨）
+        for k in [prev, latest]:
+            if k["close"] > k["upper"]:
+                upper_part = k["close"] - k["upper"]
+                lower_part = k["upper"] - k["open"]
+                if upper_part >= 2.0 * lower_part and k["upper_wick"] < 0.6 * k["entity"]:
+                    signals.append("信号3：连阳突破上轨 + <b>强势续涨形态</b>（主升概率较高）")
+                    break
 
-    # ──────────────────────────────────────────────
-    # 信号4：阴线后2连阳 + 至少一根阳线上穿下轨
-    # ──────────────────────────────────────────────
-    cross_lower_prev   = (prev["low"] <= prev["lower"] < prev["close"])
-    cross_lower_latest = (latest["low"] <= latest["lower"] < latest["close"])
-    has_lower_cross = cross_lower_prev or cross_lower_latest
-
-    if is_prev_bear and two_bulls and has_lower_cross:
-        strength = "（最新阳线下轨突破较强）" if cross_lower_latest else ""
-        signals.append(f"🚀 信号4：阴线后2连阳 + 至少一根阳线实体上穿下轨 {strength}")
-
-    # ──────────────────────────────────────────────
-    # 发送消息
-    # ──────────────────────────────────────────────
-    if signals:
-        msg = f"<b>【15分钟多头信号】{title}</b>\n\n"
-        msg += f"当前方向：{boll_direction}\n"
-        msg += f"现价：${close:,.0f}　中轨：${latest['mid']:,.0f}　下轨：${latest['lower']:,.0f}\n"
-        msg += "──────────────\n"
-
-        for sig in signals:
-            msg += f"• {sig}\n"
-
-        send_message(msg)
-        print(f"【{datetime.now().strftime('%H:%M')}】发送！找到 {len(signals)} 个多头信号")
-    else:
-        print(f"【{datetime.now().strftime('%H:%M')}】暂无符合的多头信号")
-
-    print(f"{ts} | BTC ${close:,.0f} | 方向: {boll_direction} | 信号数: {len(signals)}")
+    return signals, price_info, pos_desc
 
 
 def main():
-    df_15m = get_candles("BTC-USDT", "15m", 300)
-    if df_15m.empty:
-        print("无法获取15分钟K线")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BTC 15m 多头信号监控启动...")
+
+    df = fetch_klines()
+    if df.empty:
+        print("无法获取K线数据，退出本次运行")
         return
 
-    df_15m = add_technical_indicators(df_15m)
-    trend_alert(df_15m)
+    df = enrich_indicators(df)
+    signals, info, pos = detect_bull_signals(df)
+
+    if not signals:
+        print(f"[{info['ts']}] 暂无符合的多头信号 | {pos}")
+        return
+
+    # 构建消息
+    msg = f"<b>【BTC 15m 多头信号】{info['ts']}</b>\n\n"
+    msg += f"现价　　<b>${info['close']:,.0f}</b>\n"
+    msg += f"中轨　　${info['mid']:,.0f}\n"
+    msg += f"上轨　　${info['upper']:,.0f}\n"
+    msg += f"下轨　　${info['lower']:,.0f}\n"
+    msg += f"位置　　{pos}\n"
+    msg += "─────────────────\n"
+
+    for sig in signals:
+        msg += f"• {sig}\n"
+
+    msg += f"\n<i>仅供参考，非交易建议</i>"
+
+    if send_telegram(msg):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 已推送 {len(signals)} 个信号！")
+    else:
+        print("Telegram推送失败")
 
 
 if __name__ == '__main__':
-    print("BTC 15分钟布林线多头趋势监控启动（无去重）...")
     main()
