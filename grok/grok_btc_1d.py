@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 # ==================== 配置 ====================
 TELEGRAM_TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
-CHAT_ID = "-4836241115"
+CHAT_ID = "-5264477303"
 OKX_BASE = "https://www.okx.com"
 SYMBOL = "BTC-USDT"
 BAR = "1D"
