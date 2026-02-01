@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 日线布林线反转策略脚本（2026版 - 双向信号，无去重）
+ETH 日线布林线反转策略脚本（2026版 - 双向信号，无去重）
 核心：以日线布林带（25,2）作为主要反转趋势判断依据
 - 只检测指定的跨线反转信号
 - 信号1: 前一根阳线 + 后一根下穿上轨或中轨（空头反转信号）
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 TELEGRAM_TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 CHAT_ID = "-4836241115"
 OKX_BASE = "https://www.okx.com"
-SYMBOL = "BTC-USDT"
+SYMBOL = "ETH-USDT"
 BAR = "1D"  # 修改为日线
 LIMIT = 300
 
@@ -154,7 +154,7 @@ def detect_reversal_signals(df):
 
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BTC 日线 布林线反转信号监控启动...")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ETH 日线 布林线反转信号监控启动...")
 
     df = fetch_klines()
     if df.empty:
@@ -169,7 +169,7 @@ def main():
         return
 
     # 构建消息
-    msg = f"<b>【BTC 日线 反转信号】{info['ts']}</b>\n\n"
+    msg = f"<b>【ETH 日线 反转信号】{info['ts']}</b>\n\n"
     msg += f"现价　　<b>${info['close']:,.0f}</b>\n"
     msg += f"中轨　　${info['mid']:,.0f}\n"
     msg += f"上轨　　${info['upper']:,.0f}\n"
