@@ -217,7 +217,7 @@ def main():
         msg += f"价格: ${latest['close_price']:,.0f}\n"
         msg += f"EMA: {latest['ema20']:,.0f} / {latest['ema50']:,.0f} / {latest['ema200']:,.0f}\n"
         msg += f"<b>{latest['description']}</b>\n"
-        msg += f"\n<i>已记录到 {LOG_FILE}</i>"
+        msg += f"\n<i>金叉 死叉 可以当做反向指标</i>"
         send_telegram(msg)
         print("已推送新信号到 Telegram")
 
