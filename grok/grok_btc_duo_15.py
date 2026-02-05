@@ -20,6 +20,12 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 
+# 设置显示参数
+pd.set_option('display.max_columns', 1000)
+pd.set_option('display.max_rows', 1000)
+pd.set_option('display.width', 1000)
+pd.set_option('display.max_colwidth', 1000)
+
 # ==================== 配置 ====================
 TELEGRAM_TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 CHAT_ID = "-5068436114"

@@ -12,6 +12,12 @@ import requests
 import pandas as pd
 from datetime import datetime
 
+# 设置显示参数
+pd.set_option('display.max_columns', 1000)
+pd.set_option('display.max_rows', 1000)
+pd.set_option('display.width', 1000)
+pd.set_option('display.max_colwidth', 1000)
+
 # ==================== 配置区 ====================
 CHAT_ID = "-4836241115"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"

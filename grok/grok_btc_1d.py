@@ -5,6 +5,12 @@ import pandas as pd
 import os
 from datetime import timedelta
 
+# 设置显示参数
+pd.set_option('display.max_columns', 1000)
+pd.set_option('display.max_rows', 1000)
+pd.set_option('display.width', 1000)
+pd.set_option('display.max_colwidth', 1000)
+
 # ==================== 配置 ====================
 TOKEN = "你的TOKEN"
 CHAT_ID = "-5264477303"
@@ -109,7 +115,7 @@ def main():
     new_count = 0
 
     for d,t,p in sigs:
-        print(f"{d} | {t} | ${p:,.0f}")   # ✅ 全部打印
+        print(f"{d} | {t} | ${p}")
 
         if (d,t) not in existing:
             append_line(d,t,p)
@@ -120,7 +126,7 @@ def main():
 
     # 只推送最新
     d,t,p = sigs[-1]
-    send_tg(f"BTC EMA 最新信号\n{d} {t} ${p:,.0f}")
+    send_tg(f"BTC EMA 最新信号\n{d} {t} ${p}")
 
 
 if __name__ == "__main__":
