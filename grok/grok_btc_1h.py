@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-BTC 1小时布林线顶部反转做空策略（完整版）
+BTC 1小时反转策略
 功能：
-✔ 三个空头信号
+✔ 多空反转信号
 ✔ 实时报警
 ✔ 历史信号全扫描
 ✔ 全部历史信号写入txt
@@ -14,7 +14,6 @@ from datetime import timedelta
 
 SIGNAL_COOLDOWN = timedelta(hours=2)
 last_signal_time = {}
-
 
 # 设置显示参数
 pd.set_option('display.max_columns', 1000)
@@ -74,11 +73,10 @@ def add_indicators(df):
     df["std25"] = df["close"].rolling(25).std()
     df["upper"] = df["sma25"] + 2 * df["std25"]
     df["lower"] = df["sma25"] - 2 * df["std25"]
+    df["mid"] = df["sma25"]
 
     df["is_bull"] = df["close"] > df["open"]
     df["is_bear"] = df["close"] < df["open"]
-    df["mid_bear_high_price"] = (df["high"] + df["close"]) / 2
-    df["mid_bull_high_price"] = (df["high"] + df["open"]) / 2
     df["mid_price"] = (df["close"] + df["open"]) / 2
 
     return df
@@ -100,7 +98,7 @@ def detect_signals(sub):
         ref_low = sub.loc[idx, "low"]
 
         if latest["is_bear"] and latest["mid_price"] < ref_low:
-            name = "信号1 失守最高阳线"
+            name = "信号1 看空 向下失守最高阳线"
             if allow_signal(name, now_ts):
                 signals.append(name)
 
@@ -114,9 +112,45 @@ def detect_signals(sub):
         ref_high = sub.loc[idx, "high"]
         # 突破触发
         if latest["is_bull"] and latest["mid_price"] > ref_high:
-            name = "信号2 突破最低阴线"
+            name = "信号2 看多 向上突破最低阴线"
             if allow_signal(name, now_ts):
                 signals.append(name)
+
+    # ===== 信号3 反转突破布林下轨 =====
+    prev_low = prev["low"]
+    latest_high = latest["high"]
+
+    if prev_low < prev["lower"] and latest["is_bull"] and latest_high > latest["lower"]:
+        name = "信号3 看多 反转突破布林下轨"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ===== 信号4 反转突破布林上轨 =====
+    prev_high = prev["high"]
+    latest_low = latest["low"]
+
+    if prev_high > prev["upper"] and latest["is_bear"] and latest_low < latest["upper"]:
+        name = "信号4 看空 反转突破布林上轨"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ===== 信号5 反转放量向上突破布林中轨 =====
+    prev_low = prev["low"]
+    latest_high = latest["high"]
+
+    if prev_low < prev["mid"] and latest["is_bull"] and latest_high > latest["mid"]:
+        name = "信号5 看多 反转放量向上突破布林中轨"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ===== 信号6 反转放量向下突破布林中轨 =====
+    prev_high = prev["high"]
+    latest_low = latest["low"]
+
+    if prev_high > prev["mid"] and latest["is_bear"] and latest_low < latest["mid"]:
+        name = "信号6 看空 反转放量向下突破布林中轨"
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
     return signals
 
@@ -137,6 +171,7 @@ def allow_signal(name, ts):
 
 # ==================== 历史扫描 ====================
 def scan_history(df):
+    print(df)
     print("开始历史扫描...")
     total = 0
 
@@ -174,7 +209,7 @@ def check_latest(df):
     k = df.iloc[-1]
     ts = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = f"【BTC 1H 空头信号】{ts}\n"
+    msg = f"【BTC 1H 多空反转信号】{ts}\n"
     msg += f"现价: ${k['close']:,.0f}\n"
     msg += f"上轨: ${k['upper']:,.0f}\n\n"
 
@@ -191,7 +226,7 @@ def check_latest(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 1H 空头系统启动")
+    print("BTC 1H 系统启动")
 
     df = get_candles()
     df = add_indicators(df)

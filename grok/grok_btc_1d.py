@@ -12,7 +12,7 @@ pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
 # ==================== 配置 ====================
-TOKEN = "你的TOKEN"
+TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 CHAT_ID = "-5264477303"
 SYMBOL = "BTC-USDT"
 BAR = "1D"
