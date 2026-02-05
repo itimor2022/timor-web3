@@ -24,7 +24,7 @@ pd.set_option('display.max_colwidth', 1000)
 
 # ==================== 配置 ====================
 CHAT_ID = "-5264477303"
-TOKEN = "你的TOKEN"
+TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 LOG_FILE = "btc_1h_short_signals.txt"
 
