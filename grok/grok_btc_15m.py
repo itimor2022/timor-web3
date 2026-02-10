@@ -1,19 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟反转策略
-功能：
-✔ 多空反转信号
-✔ 实时报警
-✔ 历史信号全扫描
-✔ 全部历史信号写入txt
+BTC 15分钟 新布林信号策略
+信号1：
+✔ 当前阴线
+✔ 阴线下穿上轨
+✔ 前一根是阳线
+✔ 前一根阳线 = 最近10根最高点
 """
 
 import requests
 import pandas as pd
 from datetime import timedelta
-
-SIGNAL_COOLDOWN = timedelta(minutes=30)
-last_signal_time = {}
 
 # 设置显示参数
 pd.set_option('display.max_columns', 1000)
@@ -21,30 +18,31 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-# ==================== 配置 ====================
+SIGNAL_COOLDOWN = timedelta(minutes=60)
+last_signal_time = {}
+
 CHAT_ID = "-5264477303"
-TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
+TOKEN = "你的TOKEN"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_1h_short_signals.txt"
+LOG_FILE = "btc_15m_new_signal.txt"
 
 
 # ==================== Telegram ====================
 def send_message(msg):
-    url = f"{BASE_URL}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": msg,
-        "parse_mode": "HTML"
-    }
     try:
-        requests.get(url, params=payload, timeout=10)
+        requests.get(
+            f"{BASE_URL}/sendMessage",
+            params={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
     except:
         pass
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="15m", limit=1000):
+def get_candles(instId="BTC-USDT", bar="15m", limit=5000):
     url = "https://www.okx.com/api/v5/market/candles"
+
     r = requests.get(url, params={
         "instId": instId,
         "bar": bar,
@@ -64,80 +62,21 @@ def get_candles(instId="BTC-USDT", bar="15m", limit=1000):
         df[c] = df[c].astype(float)
 
     df = df.sort_values("ts").reset_index(drop=True)
+
     return df[["ts", "open", "high", "low", "close", "vol"]]
 
 
-# ==================== 指标 ====================
+# ==================== 布林指标 ====================
 def add_indicators(df):
-    df["sma25"] = df["close"].rolling(25).mean()
-    df["std25"] = df["close"].rolling(25).std()
-    df["upper"] = df["sma25"] + 2 * df["std25"]
-    df["lower"] = df["sma25"] - 2 * df["std25"]
-    df["mid"] = df["sma25"]
-
-    df["is_bull"] = df["close"] > df["open"]
-    df["is_bear"] = df["close"] < df["open"]
     df["mid_price"] = (df["close"] + df["open"]) / 2
-
+    df["mid"] = df["close"].rolling(20).mean()
+    df["std"] = df["close"].rolling(20).std()
+    df["upper"] = df["mid"] + 2 * df["std"]
+    df["lower"] = df["mid"] - 2 * df["std"]
     return df
 
 
-# ==================== 三信号检测 ====================
-def detect_signals(sub):
-    signals = []
-    latest = sub.iloc[-1]
-    prev = sub.iloc[-2]
-    prev2 = sub.iloc[-3]
-    now_ts = latest["ts"]
-
-    # ===== 信号1 最高阳线被低开跌破 =====
-    lookback = sub.tail(10)
-    bulls = lookback[lookback["is_bull"]]
-
-    if len(bulls) > 0:
-        idx = bulls["high"].idxmax()
-        ref_low = sub.loc[idx, "low"]
-
-        if latest["is_bear"] and latest["mid_price"] < ref_low:
-            name = "信号1 看空 向下失守最高阳线"
-            if allow_signal(name, now_ts):
-                signals.append(name)
-
-    # ===== 信号2 抓最低阴线突破 =====
-    lookback = sub.tail(10)
-    bears = lookback[lookback["is_bear"]]
-    if len(bears) > 0:
-        # 找到最低阴线
-        idx = bears["low"].idxmin()
-        # 取该阴线最高价
-        ref_high = sub.loc[idx, "high"]
-        # 突破触发
-        if latest["is_bull"] and latest["mid_price"] > ref_high:
-            name = "信号2 看多 向上突破最低阴线"
-            if allow_signal(name, now_ts):
-                signals.append(name)
-
-    # ===== 信号3 反转放量向上突破布林中轨 =====
-    prev_low = prev["low"]
-    latest_mid_price = latest["mid_price"]
-
-    if prev_low < prev["mid"] and latest["is_bull"] and latest_mid_price > latest["mid"]:
-        name = "信号3 看多 反转放量向上突破布林中轨"
-        if allow_signal(name, now_ts):
-            signals.append(name)
-
-    # ===== 信号4 反转放量向下突破布林中轨 =====
-    prev_high = prev["high"]
-    latest_mid_price = latest["mid_price"]
-
-    if prev_high > prev["mid"] and latest["is_bear"] and latest_mid_price < latest["mid"]:
-        name = "信号4 看空 反转放量向下突破布林中轨"
-        if allow_signal(name, now_ts):
-            signals.append(name)
-
-    return signals
-
-
+# ==================== 冷却 ====================
 def allow_signal(name, ts):
     last_ts = last_signal_time.get(name)
 
@@ -152,39 +91,145 @@ def allow_signal(name, ts):
     return False
 
 
+# ==================== 信号检测 ====================
+def detect_signals(sub):
+    if len(sub) < 40:
+        return []
+
+    if "vol" not in sub.columns:
+        return []
+
+    signals = []
+
+    k_now = sub.iloc[-1]
+    last3 = sub.iloc[-3:]
+    now_ts = k_now["ts"]
+    cond_bull = k_now["open"] < k_now["close"]
+    cond_bear = k_now["close"] < k_now["open"]
+    cond_break_lower = k_now["close"] < k_now["lower"]
+    cond_three_bear = (last3["close"] < last3["open"]).all()
+
+    # =========================
+    # 信号1：做空 放量跌破下轨
+    # =========================
+    if cond_bear and cond_break_lower:
+
+        prev_bull = None
+        for i in range(len(sub) - 2, -1, -1):
+            k = sub.iloc[i]
+            if k["close"] > k["open"]:
+                prev_bull = k
+                break
+
+        if prev_bull is not None:
+            cond_vol = k_now["vol"] >= prev_bull["vol"] * 4.3
+
+            if cond_vol:
+                name = "信号1 做空 放量5倍阴线跌破下轨"
+                if allow_signal(name, now_ts):
+                    signals.append(name)
+
+    # =========================
+    # 信号2：做多 4K中轨上方结构
+    # =========================
+    last4 = sub.iloc[-4:]
+
+    # ≥3阳线
+    bull_count = (last4["close"] > last4["open"]).sum()
+    cond_bull3 = bull_count >= 3
+
+    # 4根最高价都在中轨上
+    cond_high_above_mid = (last4["high"] > last4["mid"]).all()
+
+    # ≥3根开盘价在中轨上
+    open_above_mid_count = (last4["mid_price"] > last4["mid"]).sum()
+    cond_open3 = open_above_mid_count >= 3
+
+    # 第一根从中轨下方启动
+    k1 = last4.iloc[0]
+    cond_first_low_below_mid = k1["low"] < k1["mid"] and k1['close'] > k1['open']
+
+    if (cond_bull3 and cond_bull and
+            cond_high_above_mid and
+            cond_open3 and
+            cond_first_low_below_mid):
+
+        name = f"信号2 做多 4K中轨上方强势结构({bull_count}阳)"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # =========================
+    # 信号3：三阴做空结构
+    # =========================
+
+    if cond_three_bear:
+
+        # 条件2：至少一根阴线实体穿越中轨
+        cross_mid = (
+                (last3["open"] > last3["mid"]) &
+                (last3["close"] > last3["lower"]) &
+                (last3["close"] < last3["mid"])
+        ).any()
+
+        # 条件3：mid_price 连续降低
+        mp1, mp2, mp3 = last3["mid_price"].values
+        cond_mid_price_down = mp1 > mp2 > mp3
+
+        if cross_mid and cond_mid_price_down:
+            name = "信号3 做空 三阴下压穿中轨"
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
+    # =========================
+    # 信号4：长上影线反转做空
+    # =========================
+    body = abs(k_now["close"] - k_now["open"])
+    upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
+    lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"] + 0.00000001
+
+    cond_shadow_exist = body > 0  # 防止十字星除零
+    cond_upper_3x_body = upper_shadow >= body * 1.77 if cond_shadow_exist else False
+    cond_upper_4x_lower = upper_shadow >= lower_shadow * 4 if lower_shadow > 0 else True
+
+    if k_now["high"] >= k_now["upper"] and cond_upper_3x_body and cond_upper_4x_lower:
+        name = "信号4 做空 超长上影线压制"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    return signals
+
+
 # ==================== 历史扫描 ====================
 def scan_history(df):
-    print(df)
     print("开始历史扫描...")
     total = 0
-
     open(LOG_FILE, "w").close()
 
-    for i in range(50, len(df)):
+    for i in range(30, len(df)):
         sub = df.iloc[:i + 1]
         sigs = detect_signals(sub)
 
         if sigs:
             k = sub.iloc[-1]
             ts = k["ts"].strftime("%Y-%m-%d %H:%M")
-            price = k["close"]
 
-            text = f"{ts} | BTC ${price:,.0f}\n"
+            text = f"{ts} | BTC {k['close']:,.0f}\n"
             for s in sigs:
                 text += f" - {s}\n"
-            text += "-" * 40 + "\n"
+            text += "-" * 30 + "\n"
 
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(text)
 
             total += 1
 
-    print(f"历史信号数量: {total}")
+    print("历史信号数量:", total)
 
 
 # ==================== 实时检测 ====================
 def check_latest(df):
     sigs = detect_signals(df)
+
     if not sigs:
         print("最新K线无信号")
         return
@@ -192,9 +237,9 @@ def check_latest(df):
     k = df.iloc[-1]
     ts = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = f"【BTC 1H 多空反转信号】{ts}\n"
-    msg += f"现价: ${k['close']:,.0f}\n"
-    msg += f"上轨: ${k['upper']:,.0f}\n\n"
+    msg = "BTC 15M 新信号触发\n"
+    msg += f"{ts}\n"
+    msg += f"价格: {k['close']:,.0f}\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"
@@ -209,15 +254,12 @@ def check_latest(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 1H 系统启动")
+    print("BTC 15M 新策略启动")
 
     df = get_candles()
     df = add_indicators(df)
 
-    # 历史扫描
     scan_history(df)
-
-    # 实时检测
     check_latest(df)
 
 
