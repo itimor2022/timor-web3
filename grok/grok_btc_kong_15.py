@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟布林线趋势监控脚本（2025版 - 只做空，无去重）
-核心：以15分钟布林线（25,2）作为主要空头趋势判断依据
-- 只检测空头信号
-- 信号1: 1根阴线实体直接从中轨碰到下轨（开盘 >= 中轨, 收盘 <= 下轨, 是阴线）
-- 信号2: 连续2根阴线，其中至少一根实体下穿中轨（某根 open > 中轨 and close < 中轨），且三个阴线的中心点 ((open + close)/2) 向下移动（递减）
-- 信号3: 阴线悬空，前一根阳线实体大力突破上轨，阳线上半部分（high - open）是下半部分（open - low）的1.2倍，当前1根阴线实体悬浮在上轨上面
-- 每次运行只要有信号就发送消息（无去重，适合实时监控）
-- 所有触发信号一次性整合成一条消息，避免刷屏
+BTC 15分钟 布林信号策略
 """
 
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import timedelta
 
 # 设置显示参数
 pd.set_option('display.max_columns', 1000)
@@ -20,179 +13,327 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-# ==================== 配置区 ====================
-CHAT_ID = "-4850300375"
-TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
+SIGNAL_COOLDOWN = timedelta(minutes=60)
+last_signal_time = {}
+
+CHAT_ID = "-5264477303"
+TOKEN = "你的TOKEN"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
+LOG_FILE = "btc_15m_new_signal.txt"
 
 
+# ==================== Telegram ====================
 def send_message(msg):
-    url = f"{BASE_URL}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": msg,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
     try:
-        r = requests.get(url, params=payload, timeout=10)
-        if not r.json().get("ok"):
-            print("Telegram发送失败:", r.json())
-    except Exception as e:
-        print("发送异常:", e)
+        requests.get(
+            f"{BASE_URL}/sendMessage",
+            params={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
+    except:
+        pass
 
 
-def get_candles(instId="BTC-USDT", bar="15m", limit=300):
+# ==================== 获取K线 ====================
+def get_candles(instId="BTC-USDT", bar="15m", limit=5000):
     url = "https://www.okx.com/api/v5/market/candles"
-    params = {"instId": instId, "bar": bar, "limit": limit}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()["data"]
-        df = pd.DataFrame(data,
-                          columns=["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"])
-        df["ts"] = pd.to_datetime(df["ts"].astype(int), unit='ms') + pd.Timedelta(hours=7)  # 亚洲时间
-        df = df.astype({"open": float, "high": float, "low": float, "close": float, "vol": float})
-        df = df[["ts", "open", "high", "low", "close", "vol"]].sort_values("ts").reset_index(drop=True)
-        return df
-    except Exception as e:
-        print("获取K线失败:", e)
-        return pd.DataFrame()
+
+    r = requests.get(url, params={
+        "instId": instId,
+        "bar": bar,
+        "limit": limit
+    }, timeout=10)
+
+    data = r.json()["data"]
+
+    df = pd.DataFrame(data, columns=[
+        "ts", "open", "high", "low", "close",
+        "vol", "volCcy", "volCcyQuote", "confirm"
+    ])
+
+    df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms") + pd.Timedelta(hours=7)
+
+    for c in ["open", "high", "low", "close", "vol"]:
+        df[c] = df[c].astype(float)
+
+    df = df.sort_values("ts").reset_index(drop=True)
+
+    return df[["ts", "open", "high", "low", "close", "vol"]]
 
 
-def add_technical_indicators(df):
-    if len(df) < 50:
-        return df
-
-    # 基础指标
-    df["return"] = df["close"].pct_change() * 100
-
-    # BOLL 25,2（核心）
-    df["sma25"] = df["close"].rolling(25).mean()
-    df["std25"] = df["close"].rolling(25).std()
-    df["upper"] = df["sma25"] + 2 * df["std25"]
-    df["lower"] = df["sma25"] - 2 * df["std25"]
-    df["mid"] = df["sma25"]
-
-    # 阴线/阳线
-    df["is_bear"] = df["close"] < df["open"]
-    df["entity_size"] = abs(df["close"] - df["open"])
-
-    # 中心点
-    df["center"] = (df["open"] + df["close"]) / 2
-
+# ==================== 布林指标 ====================
+def add_indicators(df):
+    df["mid_price"] = (df["close"] + df["open"]) / 2
+    df["mid"] = df["close"].rolling(20).mean()
+    df["std"] = df["close"].rolling(20).std()
+    df["upper"] = df["mid"] + 2 * df["std"]
+    df["lower"] = df["mid"] - 2 * df["std"]
     return df
 
 
-def trend_alert(df_15m):
-    if df_15m.empty or len(df_15m) < 4:
-        return
+# ==================== 冷却 ====================
+def allow_signal(name, ts):
+    last_ts = last_signal_time.get(name)
 
-    # 取最近几根K线（索引 -1=最新, -2=前一根, -3=前前, -4=更前一根用于信号3）
-    latest = df_15m.iloc[-1]  # 当前K（希望是阴线）
-    prev = df_15m.iloc[-2]  # 前一根（信号3中是大阳线）
-    prev_prev = df_15m.iloc[-3]
+    if last_ts is None:
+        last_signal_time[name] = ts
+        return True
 
-    close = latest["close"]
-    ts = latest["ts"].strftime("%m-%d %H:%M")
-    title = f"15m BTC-USDT - {ts}"
+    if ts - last_ts >= SIGNAL_COOLDOWN:
+        last_signal_time[name] = ts
+        return True
 
-    boll_direction = "震荡"
-    if close < latest["mid"]:
-        boll_direction = "空头方向"
-    elif close > latest["mid"]:
-        boll_direction = "多头方向"
+    return False
+
+
+# ==================== 阳线波峰 ====================
+def find_last_two_bull_peaks(df, n=3):
+    peaks = []
+
+    for i in range(n, len(df) - n):
+        k = df.iloc[i]
+
+        # 必须阳线
+        if k["close"] <= k["open"]:
+            continue
+
+        h = k["high"]
+
+        left = df.iloc[i - n:i]["high"].max()
+        right = df.iloc[i + 1:i + n + 1]["high"].max()
+
+        if h > left and h > right:
+            peaks.append(i)
+
+    if len(peaks) >= 2:
+        return peaks[-2], peaks[-1]
+
+    return None, None
+
+
+def detect_signals(sub):
+    if len(sub) < 120:
+        return []
+
+    if "vol" not in sub.columns:
+        return []
 
     signals = []
 
-    # ──────────────────────────────────────────────
-    # 信号1：单根大阴线从中轨直接贯穿到下轨（力度较强）
-    # ──────────────────────────────────────────────
-    if (
-            latest["is_bear"] and
-            latest["open"] >= latest["mid"] and
-            latest["close"] <= latest["lower"] and
-            latest["entity_size"] > (latest["mid"] - latest["lower"]) * 0.7  # 至少吃掉70%的中→下轨距离，可调
-    ):
-        drop_pct = (latest["open"] - latest["close"]) / latest["open"] * 100
-        signals.append(
-            f"⚠️ 信号1：单根大阴线从中轨直杀下轨（跌幅约 {drop_pct:.1f}%）→ 空头暴力砸盘"
-        )
+    k_now = sub.iloc[-1]
+    k_prev = sub.iloc[-2]
+    k_prev2 = sub.iloc[-3]
+    k_prev3 = sub.iloc[-4]
 
-    # ──────────────────────────────────────────────
-    # 信号2：连续三根阴线 + 至少一根实体下穿中轨 + 中心点递减（趋势加速确认）
-    # ──────────────────────────────────────────────
-    three_bears = prev["is_bear"] and latest["is_bear"]
+    now_ts = k_now["ts"]
 
-    centers_down = (
-        (prev_prev["center"] > prev["center"] > latest["center"])
-        if three_bears else False
-    )
+    cond_now_bear = k_now["close"] < k_now["open"]
+    cond_prev_bear = k_prev["close"] < k_prev["open"]
+    cond_bull_prev = k_prev["close"] > k_prev["open"]
 
-    has_cross_mid_down = any(
-        c["open"] > c["mid"] and c["close"] < c["mid"]
-        for c in [prev_prev, prev, latest]
-    )
+    # ==================================================
+    # 信号1：最高收盘阳线 + 大阴线反包
+    # ==================================================
+    if cond_now_bear and cond_bull_prev:
 
-    if three_bears and has_cross_mid_down and centers_down:
-        signals.append(
-            "⚠️ 信号2：连续2阴 + 实体下穿中轨 + 中心点逐根下移 → 空头趋势加速"
-        )
+        prev_body = abs(k_prev["close"] - k_prev["open"])
+        now_body = abs(k_now["close"] - k_now["open"])
 
-    # ──────────────────────────────────────────────
-    # 信号3：阴线悬空 + 前一根大阳线突破上轨 + 阳线上半身明显长（暗示诱多后反转）
-    # ──────────────────────────────────────────────
-    if len(df_15m) >= 3:
-        # 前一根是大阳线 + 上轨突破（收盘 > 上轨 或 high > 上轨）
-        prev_bull_break = (
-                prev["close"] > prev["open"] and
-                prev["high"] > prev["upper"] * 0.998  # 轻微容差，避免浮点严格等于漏掉
-        )
+        if now_body > prev_body:
 
-        if prev_bull_break:
-            # 阳线上半部分（high - open） vs 下半部分（open - low）
-            upper_half = prev["high"] - prev["open"]
-            lower_half = prev["open"] - prev["low"]
-            upper_dominant = upper_half > lower_half * 1.3  # 你要求的1.2倍，可调1.15~1.4
+            for n in [80, 50, 20]:
+                if len(sub) < n + 2:
+                    continue
 
-            # 当前阴线“悬空”：low > 上轨（完全在上轨上方飘着）
-            hanging_above = latest["low"] > latest["upper"] * 1.002  # 轻微容差
+                window = sub.iloc[-n - 1:-1]
+                highest_close = window["close"].max()
 
-            if upper_dominant and hanging_above and latest["is_bear"]:
-                signals.append(
-                    f"⚠️ 信号3：阴线高位悬空 → 前大阳诱多突破上轨 → 顶部反转陷阱"
+                if k_prev["close"] >= highest_close:
+
+                    name = f"信号1 做空 {n}根最高收盘阳线 + 大阴线反包"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+                    break
+
+    # ==================================================
+    # 信号2：两连阴 + 上轨突破回落
+    # ==================================================
+    if cond_now_bear and cond_prev_bear:
+
+        hit_upper = False
+
+        if k_prev["high"] > k_prev["upper"]:
+            hit_upper = True
+
+        if k_prev3["high"] > k_prev3["upper"]:
+            hit_upper = True
+
+        if hit_upper:
+
+            for n in [80, 50, 20]:
+                if len(sub) < n + 4:
+                    continue
+
+                window = sub.iloc[-n - 1:-1]
+                highest_high = window["high"].max()
+
+                ref_high = max(
+                    k_prev["high"] if k_prev["high"] > k_prev["upper"] else 0,
+                    k_prev3["high"] if k_prev3["high"] > k_prev3["upper"] else 0
                 )
 
-    # ──────────────────────────────────────────────
-    # 整合发送（所有信号放一条消息）
-    # ──────────────────────────────────────────────
-    if signals:
-        msg = f"【15分钟空头信号】{title}\n\n"
-        msg += f"当前方向：{boll_direction}\n"
-        msg += f"现价：${close:,.0f}　中轨：${latest['mid']:,.0f}　上轨：${latest['upper']:,.0f}\n"
-        msg += "──────────────\n"
+                if ref_high >= highest_high:
 
-        for sig in signals:
-            msg += f"• {sig}\n"
+                    name = f"信号2 做空 {n}根最高点上穿上轨 + 两连阴"
 
-        send_message(msg)
-        print(f"【{datetime.now().strftime('%H:%M')}】发送空头警报！找到 {len(signals)} 个信号")
-    else:
-        print(f"【{datetime.now().strftime('%H:%M')}】暂无空头信号")
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+                    break
 
-    # 控制台状态
-    print(f"{ts} | BTC ${close:,.0f} | 方向: {boll_direction} | 信号数: {len(signals)}")
+    # ==================================================
+    # 信号3：最低点 + 跌破下轨 + 超级下影线
+    # ==================================================
+    if k_now["low"] < k_now["lower"]:
+
+        # 下影线长度
+        lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
+
+        # 前一根实体
+        prev_body = abs(k_prev["close"] - k_prev["open"])
+
+        if prev_body == 0:
+            return signals
+
+        # 计算倍数
+        ratio = lower_shadow / prev_body
+
+        strength = None
+        if ratio >= 8:
+            strength = "8倍超级下影"
+        elif ratio >= 5:
+            strength = "5倍超强下影"
+        elif ratio >= 3:
+            strength = "3倍强下影"
+
+        if strength:
+
+            for n in [80, 50, 20]:
+                if len(sub) < n + 2:
+                    continue
+
+                window = sub.iloc[-n - 1:-1]
+                lowest_low = window["low"].min()
+
+                if k_now["low"] <= lowest_low:
+
+                    name = f"信号3 做多 {n}根最低点 + 下破下轨 + {strength}"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+                    break
+
+    # ==================================================
+    # 信号4：放量反转（极限成交量）
+    # ==================================================
+    for n in [80, 50, 20]:
+        if len(sub) < n + 3:
+            continue
+
+        window = sub.iloc[-n - 1:-1]
+        max_vol = window["vol"].max()
+
+        current_vol = k_now["vol"]
+
+        # 当前必须是该级别最大量
+        if current_vol >= max_vol:
+
+            # 前3根最小成交量
+            prev3 = sub.iloc[-4:-1]
+            min_prev3_vol = prev3["vol"].min()
+
+            if min_prev3_vol == 0:
+                continue
+
+            ratio = current_vol / min_prev3_vol
+
+            if ratio >= 6:
+
+                name = f"信号4 放量反转 {n}根最大量 + {ratio:.1f}倍爆量"
+
+                if allow_signal(name, now_ts):
+                    signals.append(name)
+
+                break
+
+    return signals
 
 
-def main():
-    df_15m = get_candles("BTC-USDT", "15m", 300)
-    if df_15m.empty:
-        print("无法获取15分钟K线")
+# ==================== 历史扫描 ====================
+def scan_history(df):
+    print("开始历史扫描...")
+    total = 0
+    open(LOG_FILE, "w").close()
+
+    for i in range(30, len(df)):
+        sub = df.iloc[:i + 1]
+        sigs = detect_signals(sub)
+
+        if sigs:
+            k = sub.iloc[-1]
+            ts = k["ts"].strftime("%Y-%m-%d %H:%M")
+
+            text = f"{ts} | BTC {k['close']:,.0f}\n"
+            for s in sigs:
+                text += f" - {s}\n"
+            text += "-" * 30 + "\n"
+
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(text)
+
+            total += 1
+
+    print("历史信号数量:", total)
+
+
+# ==================== 实时检测 ====================
+def check_latest(df):
+    sigs = detect_signals(df)
+
+    if not sigs:
+        print("最新K线无信号")
         return
 
-    df_15m = add_technical_indicators(df_15m)
-    trend_alert(df_15m)
+    k = df.iloc[-1]
+    ts = k["ts"].strftime("%m-%d %H:%M")
+
+    msg = "BTC 15M 新信号触发\n"
+    msg += f"{ts}\n"
+    msg += f"价格: {k['close']:,.0f}\n\n"
+
+    for s in sigs:
+        msg += f"• {s}\n"
+
+    send_message(msg)
+
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+
+    print("已发送实时信号")
 
 
-if __name__ == '__main__':
-    print("BTC 15分钟布林线空头趋势监控启动（无去重）...")
+# ==================== 主程序 ====================
+def main():
+    print("BTC 15M 新策略启动")
+
+    df = get_candles()
+    df = add_indicators(df)
+
+    scan_history(df)
+    check_latest(df)
+
+
+if __name__ == "__main__":
     main()

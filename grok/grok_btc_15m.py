@@ -118,7 +118,7 @@ def find_last_two_bull_peaks(df, n=3):
 
 # ==================== 信号检测 ====================
 def detect_signals(sub):
-    print(sub)
+    # print(sub)
     if len(sub) < 40:
         return []
 
@@ -128,120 +128,242 @@ def detect_signals(sub):
     signals = []
 
     k_now = sub.iloc[-1]
-    last3 = sub.iloc[-3:]
+    k_prev = sub.iloc[-2]
+    k_prev2 = sub.iloc[-3]
+    k_prev3 = sub.iloc[-4]
+    last3 = sub.iloc[-4:-1]
+
     now_ts = k_now["ts"]
     cond_bull = k_now["open"] < k_now["close"]
     cond_bear = k_now["close"] < k_now["open"]
     cond_break_lower = k_now["close"] < k_now["lower"]
     cond_three_bear = (last3["close"] < last3["open"]).all()
+    cond_prev_bear = k_prev["close"] < k_prev["open"]
+    cond_bull_prev = k_prev["close"] > k_prev["open"]
 
-    # # =========================
-    # # 信号1：做空 放量跌破下轨
-    # # =========================
-    # if cond_bear and cond_break_lower:
-    #
-    #     prev_bull = None
-    #     for i in range(len(sub) - 2, -1, -1):
-    #         k = sub.iloc[i]
-    #         if k["close"] > k["open"]:
-    #             prev_bull = k
-    #             break
-    #
-    #     if prev_bull is not None:
-    #         cond_vol = k_now["vol"] >= prev_bull["vol"] * 4.3
-    #
-    #         if cond_vol:
-    #             name = "信号1 做空 放量5倍阴线跌破下轨"
-    #             if allow_signal(name, now_ts):
-    #                 signals.append(name)
-    #
-    # # =========================
-    # # 信号2：做多 4K中轨上方结构
-    # # =========================
-    # last4 = sub.iloc[-4:]
-    #
-    # # ≥3阳线
-    # bull_count = (last4["close"] > last4["open"]).sum()
-    # cond_bull3 = bull_count >= 3
-    #
-    # # 4根最高价都在中轨上
-    # cond_high_above_mid = (last4["high"] > last4["mid"]).all()
-    #
-    # # ≥3根开盘价在中轨上
-    # open_above_mid_count = (last4["mid_price"] > last4["mid"]).sum()
-    # cond_open3 = open_above_mid_count >= 3
-    #
-    # # 第一根从中轨下方启动
-    # k1 = last4.iloc[0]
-    # cond_first_low_below_mid = k1["low"] < k1["mid"] and k1['close'] > k1['open']
-    #
-    # if (cond_bull3 and cond_bull and
-    #         cond_high_above_mid and
-    #         cond_open3 and
-    #         cond_first_low_below_mid):
-    #
-    #     name = f"信号2 做多 4K中轨上方强势结构({bull_count}阳)"
-    #     if allow_signal(name, now_ts):
-    #         signals.append(name)
-    #
-    # # =========================
-    # # 信号3：三阴做空结构
-    # # =========================
-    #
-    # if cond_three_bear:
-    #
-    #     # 条件2：至少一根阴线实体穿越中轨
-    #     cross_mid = (
-    #             (last3["open"] > last3["mid"]) &
-    #             (last3["close"] > last3["lower"]) &
-    #             (last3["close"] < last3["mid"])
-    #     ).any()
-    #
-    #     # 条件3：mid_price 连续降低
-    #     mp1, mp2, mp3 = last3["mid_price"].values
-    #     cond_mid_price_down = mp1 > mp2 > mp3
-    #
-    #     if cross_mid and cond_mid_price_down:
-    #         name = "信号3 做空 三阴下压穿中轨"
-    #         if allow_signal(name, now_ts):
-    #             signals.append(name)
-    #
-    # # =========================
-    # # 信号4：长上影线反转做空
-    # # =========================
-    # body = abs(k_now["close"] - k_now["open"])
-    # upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
-    # lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"] + 0.00000001
-    #
-    # cond_shadow_exist = body > 0  # 防止十字星除零
-    # cond_upper_3x_body = upper_shadow >= body * 1.77 if cond_shadow_exist else False
-    # cond_upper_4x_lower = upper_shadow >= lower_shadow * 4 if lower_shadow > 0 else True
-    #
-    # if k_now["high"] >= k_now["upper"] and cond_upper_3x_body and cond_upper_4x_lower:
-    #     name = "信号4 做空 超长上影线压制"
-    #     if allow_signal(name, now_ts):
-    #         signals.append(name)
+    # ==================================================
+    # 信号1：最高收盘阳线 + 大阴线反包
+    # ==================================================
+    if cond_bear and cond_bull_prev:
 
-    # =========================
-    # 信号5：阳线高点下降结构
-    # =========================
+        prev_body = abs(k_prev["close"] - k_prev["open"])
+        now_body = abs(k_now["close"] - k_now["open"])
 
-    p2, p1 = find_last_two_bull_peaks(sub, n=3)
+        if now_body > prev_body:
 
-    if p1 is not None and p2 is not None:
+            for n in [80, 50, 20]:
+                if len(sub) < n + 2:
+                    continue
 
-        high_prev = sub.iloc[p2]["high"]
-        high_now = sub.iloc[p1]["high"]
+                window = sub.iloc[-n - 1:-1]
+                highest_close = window["close"].max()
 
-        # 本次阳线高点 < 上一次阳线高点
-        if high_now < high_prev and cond_bull:
+                if k_prev["close"] >= highest_close:
 
-            # 当前K线必须是阳线才触发
-            if cond_bull:
-                name = "信号5 做空 阳线高点下降(Lower High)"
+                    name = f"信号1 做空 {n}根最高收盘阳线 + 大阴线反包"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+                    break
+
+    # ==================================================
+    # 信号2：两连阴 + 上轨突破回落
+    # ==================================================
+    if cond_bear and cond_prev_bear:
+
+        hit_upper = False
+
+        if k_prev["high"] > k_prev["upper"]:
+            hit_upper = True
+
+        if k_prev3["high"] > k_prev3["upper"]:
+            hit_upper = True
+
+        if hit_upper:
+
+            for n in [80, 50, 20]:
+                if len(sub) < n + 4:
+                    continue
+
+                window = sub.iloc[-n - 1:-1]
+                highest_high = window["high"].max()
+
+                ref_high = max(
+                    k_prev["high"] if k_prev["high"] > k_prev["upper"] else 0,
+                    k_prev3["high"] if k_prev3["high"] > k_prev3["upper"] else 0
+                )
+
+                if ref_high >= highest_high:
+
+                    name = f"信号2 做空 {n}根最高点上穿上轨 + 两连阴"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+                    break
+
+    # ==================================================
+    # 信号3：最低点 + 跌破下轨 + 超级下影线
+    # ==================================================
+    if k_now["low"] < k_now["lower"]:
+
+        # 下影线长度
+        lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
+
+        # 前一根实体
+        prev_body = abs(k_prev["close"] - k_prev["open"])
+
+        if prev_body == 0:
+            return signals
+
+        # 计算倍数
+        ratio = lower_shadow / prev_body
+
+        strength = None
+        if ratio >= 8:
+            strength = "8倍超级下影"
+        elif ratio >= 5:
+            strength = "5倍超强下影"
+        elif ratio >= 3:
+            strength = "3倍强下影"
+
+        if strength:
+
+            for n in [80, 50, 20]:
+                if len(sub) < n + 2:
+                    continue
+
+                window = sub.iloc[-n - 1:-1]
+                lowest_low = window["low"].min()
+
+                if k_now["low"] <= lowest_low:
+
+                    name = f"信号3 做多 {n}根最低点 + 下破下轨 + {strength}"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+                    break
+
+    # ==================================================
+    # 信号4：放量反转（极限成交量）
+    # ==================================================
+    for n in [80, 50, 20]:
+        if len(sub) < n + 3:
+            continue
+
+        window = sub.iloc[-n - 1:-1]
+        max_vol = window["vol"].max()
+
+        current_vol = k_now["vol"]
+
+        # 当前必须是该级别最大量
+        if current_vol >= max_vol:
+
+            # 前3根最小成交量
+            prev3 = sub.iloc[-4:-1]
+            min_prev3_vol = prev3["vol"].min()
+
+            if min_prev3_vol == 0:
+                continue
+
+            ratio = current_vol / min_prev3_vol
+
+            if ratio >= 6:
+
+                name = f"信号4 放量反转 {n}根最大量 + {ratio:.1f}倍爆量"
 
                 if allow_signal(name, now_ts):
                     signals.append(name)
+
+                break
+
+    # =========================
+    # 信号1：做空 放量跌破下轨
+    # =========================
+    if cond_bear and cond_break_lower:
+
+        prev_bull = None
+        for i in range(len(sub) - 2, -1, -1):
+            k = sub.iloc[i]
+            if k["close"] > k["open"]:
+                prev_bull = k
+                break
+
+        if prev_bull is not None:
+            cond_vol = k_now["vol"] >= prev_bull["vol"] * 4.3
+
+            if cond_vol:
+                name = "信号1 做空 放量5倍阴线跌破下轨"
+                if allow_signal(name, now_ts):
+                    signals.append(name)
+
+    # =========================
+    # 信号2：做多 4K中轨上方结构
+    # =========================
+    last4 = sub.iloc[-4:]
+
+    # ≥3阳线
+    bull_count = (last4["close"] > last4["open"]).sum()
+    cond_bull3 = bull_count >= 3
+
+    # 4根最高价都在中轨上
+    cond_high_above_mid = (last4["high"] > last4["mid"]).all()
+
+    # ≥3根开盘价在中轨上
+    open_above_mid_count = (last4["mid_price"] > last4["mid"]).sum()
+    cond_open3 = open_above_mid_count >= 3
+
+    # 第一根从中轨下方启动
+    k1 = last4.iloc[0]
+    cond_first_low_below_mid = k1["low"] < k1["mid"] and k1['close'] > k1['open']
+
+    if (cond_bull3 and cond_bull and
+            cond_high_above_mid and
+            cond_open3 and
+            cond_first_low_below_mid):
+
+        name = f"信号2 做多 4K中轨上方强势结构({bull_count}阳)"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # =========================
+    # 信号3：三阴做空结构
+    # =========================
+
+    if cond_three_bear:
+
+        # 条件2：至少一根阴线实体穿越中轨
+        cross_mid = (
+                (k_prev2["open"] > k_prev2["mid"]) &
+                (k_prev2["close"] > k_prev2["lower"]) &
+                (k_prev2["close"] < k_prev2["mid"])
+        ).any()
+
+        # 条件3：mid_price 连续降低
+        mp1, mp2, mp3 = last3["mid_price"].values
+        cond_mid_price_down = mp1 > mp2 > mp3
+
+        if cross_mid and cond_mid_price_down:
+            name = "信号3 做空 三阴下压穿中轨"
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
+    # =========================
+    # 信号4：长上影线反转做空
+    # =========================
+    body = abs(k_now["close"] - k_now["open"])
+    upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
+    lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"] + 0.00000001
+
+    cond_shadow_exist = body > 0  # 防止十字星除零
+    cond_upper_3x_body = upper_shadow >= body * 1.77 if cond_shadow_exist else False
+    cond_upper_4x_lower = upper_shadow >= lower_shadow * 4 if lower_shadow > 0 else True
+
+    if k_now["high"] >= k_now["upper"] and cond_upper_3x_body and cond_upper_4x_lower:
+        name = "信号4 做空 超长上影线压制"
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
     return signals
 
