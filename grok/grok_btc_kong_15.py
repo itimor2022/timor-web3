@@ -13,13 +13,13 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=60)
+SIGNAL_COOLDOWN = timedelta(minutes=120)
 last_signal_time = {}
 
-CHAT_ID = "-5068436114"
-TOKEN = "你的TOKEN"
+CHAT_ID = "-5264477303"
+TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_15m_new_signal.txt"
+LOG_FILE = "btc_1h_new_signal.txt"
 
 
 # ==================== Telegram ====================
@@ -35,7 +35,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="15m", limit=5000):
+def get_candles(instId="BTC-USDT", bar="1H", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
@@ -68,6 +68,10 @@ def add_indicators(df):
     df["std"] = df["close"].rolling(20).std()
     df["upper"] = df["mid"] + 2 * df["std"]
     df["lower"] = df["mid"] - 2 * df["std"]
+
+    df["is_bull"] = df["close"] > df["open"]
+    df["is_bear"] = df["close"] < df["open"]
+    df["mid_price"] = (df["close"] + df["open"]) / 2
     return df
 
 
@@ -112,161 +116,145 @@ def find_last_two_bull_peaks(df, n=3):
 
 
 def detect_signals(sub):
-    if len(sub) < 120:
-        return []
-
-    if "vol" not in sub.columns:
+    if len(sub) < 25:
         return []
 
     signals = []
 
     k_now = sub.iloc[-1]
     k_prev = sub.iloc[-2]
-    k_prev2 = sub.iloc[-3]
-    k_prev3 = sub.iloc[-4]
+    k_prev_10 = sub.tail(20)
+
+    body = abs(k_now["close"] - k_now["open"])
+    pct = abs(k_now["close"] - k_now["open"]) / k_now["open"]
+
+    upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
+    lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
 
     now_ts = k_now["ts"]
 
-    cond_now_bear = k_now["close"] < k_now["open"]
-    cond_prev_bear = k_prev["close"] < k_prev["open"]
-    cond_bull_prev = k_prev["close"] > k_prev["open"]
+    # ===============================
+    # 工具函数：实体突破判断
+    # ===============================
+    def body_break_upper(k):
+        return k["open"] > k["upper"] or k["close"] > k["upper"]
 
-    # ==================================================
-    # 信号1：最高收盘阳线 + 大阴线反包
-    # ==================================================
-    if cond_now_bear and cond_bull_prev:
+    def body_break_lower(k):
+        return k["open"] < k["lower"] or k["close"] < k["lower"]
 
-        prev_body = abs(k_prev["close"] - k_prev["open"])
-        now_body = abs(k_now["close"] - k_now["open"])
+    # ===============================
+    # 信号1：看空 双K实体突破上轨
+    # ===============================
+    k_prev["is_bull"] = k_prev["close"] > k_prev["open"]
+    k_now["is_bear"] = k_now["close"] < k_now["open"]
 
-        if now_body > prev_body:
+    if k_prev["is_bull"] and k_now["is_bear"]:
+        if body_break_upper(k_prev) and body_break_upper(k_now):
 
-            for n in [80, 50, 20]:
-                if len(sub) < n + 2:
-                    continue
+            name = "信号1 看空 双K实体突破上轨"
 
-                window = sub.iloc[-n - 1:-1]
-                highest_close = window["close"].max()
+            if allow_signal(name, now_ts):
+                signals.append(name)
 
-                if k_prev["close"] >= highest_close:
+    # ===============================
+    # 信号2：看多 双K实体突破下轨
+    # ===============================
+    k_prev["is_bear"] = k_prev["close"] < k_prev["open"]
+    k_now["is_bull"] = k_now["close"] > k_now["open"]
 
-                    name = f"信号1 做空 {n}根最高收盘阳线 + 大阴线反包"
+    if k_prev["is_bear"] and k_now["is_bull"]:
+        if body_break_lower(k_prev) and body_break_lower(k_now):
 
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
+            name = "信号2 看多 双K实体突破下轨"
 
-                    break
+            if allow_signal(name, now_ts):
+                signals.append(name)
 
-    # ==================================================
-    # 信号2：两连阴 + 上轨突破回落
-    # ==================================================
-    if cond_now_bear and cond_prev_bear:
+    # ===============================
+    # 信号3：看多 强承接下影结构
+    # ===============================
+    if body > 0:
+        if pct >= 0.002:
+            # 必须：下影线 > 实体 且 下影线 > 上影线
+            if lower_shadow > body and lower_shadow > upper_shadow and k_now["low"] < k_now["lower"]:
+                ratio = lower_shadow / body
+                level = None
+                if ratio >= 3:
+                    level = "3倍下影(强)"
+                elif ratio >= 2:
+                    level = "2倍下影(中)"
+                elif ratio >= 1:
+                    level = "1倍下影(弱)"
 
-        hit_upper = False
+                if level:
 
-        if k_prev["high"] > k_prev["upper"]:
-            hit_upper = True
-
-        if k_prev3["high"] > k_prev3["upper"]:
-            hit_upper = True
-
-        if hit_upper:
-
-            for n in [80, 50, 20]:
-                if len(sub) < n + 4:
-                    continue
-
-                window = sub.iloc[-n - 1:-1]
-                highest_high = window["high"].max()
-
-                ref_high = max(
-                    k_prev["high"] if k_prev["high"] > k_prev["upper"] else 0,
-                    k_prev3["high"] if k_prev3["high"] > k_prev3["upper"] else 0
-                )
-
-                if ref_high >= highest_high:
-
-                    name = f"信号2 做空 {n}根最高点上穿上轨 + 两连阴"
-
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
-                    break
-
-    # ==================================================
-    # 信号3：最低点 + 跌破下轨 + 超级下影线
-    # ==================================================
-    if k_now["low"] < k_now["lower"]:
-
-        # 下影线长度
-        lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
-
-        # 前一根实体
-        prev_body = abs(k_prev["close"] - k_prev["open"])
-
-        if prev_body == 0:
-            return signals
-
-        # 计算倍数
-        ratio = lower_shadow / prev_body
-
-        strength = None
-        if ratio >= 8:
-            strength = "8倍超级下影"
-        elif ratio >= 5:
-            strength = "5倍超强下影"
-        elif ratio >= 3:
-            strength = "3倍强下影"
-
-        if strength:
-
-            for n in [80, 50, 20]:
-                if len(sub) < n + 2:
-                    continue
-
-                window = sub.iloc[-n - 1:-1]
-                lowest_low = window["low"].min()
-
-                if k_now["low"] <= lowest_low:
-
-                    name = f"信号3 做多 {n}根最低点 + 下破下轨 + {strength}"
+                    name = f"信号3 看多 承接结构 + {level}"
 
                     if allow_signal(name, now_ts):
                         signals.append(name)
 
-                    break
+    # ===============================
+    # 信号4：看空 上方压制结构
+    # ===============================
 
-    # ==================================================
-    # 信号4：放量反转（极限成交量）
-    # ==================================================
-    for n in [80, 50, 20]:
-        if len(sub) < n + 3:
-            continue
+    if body > 0:
+        if pct >= 0.002:
+            if (
+                    upper_shadow > body and
+                    upper_shadow > lower_shadow and
+                    k_now["high"] > k_now["upper"]
+            ):
 
-        window = sub.iloc[-n - 1:-1]
-        max_vol = window["vol"].max()
+                ratio = upper_shadow / body
+                level = None
+                if ratio >= 3:
+                    level = "3倍上影(强)"
+                elif ratio >= 2:
+                    level = "2倍上影(中)"
+                elif ratio >= 1:
+                    level = "1倍上影(普通)"
 
-        current_vol = k_now["vol"]
+                if level:
+                    name = f"信号4 看空 压制结构 + {level}"
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
 
-        # 当前必须是该级别最大量
-        if current_vol >= max_vol:
+    # ===============================
+    # 信号5 看空 顶部强阳失守
+    # ===============================
+    recent_20 = sub.iloc[-21:-1]
+    recent_5 = sub.iloc[-7:-1]
 
-            # 前3根最小成交量
-            prev3 = sub.iloc[-4:-1]
-            min_prev3_vol = prev3["vol"].min()
+    if len(recent_20) >= 20 and len(recent_5) >= 5:
 
-            if min_prev3_vol == 0:
-                continue
+        # 20根中的最高点
+        high_20 = recent_20["high"].max()
 
-            ratio = current_vol / min_prev3_vol
+        # 判断最高点是否出现在最近5根中
+        if recent_5["high"].max() == high_20:
 
-            if ratio >= 6:
+            # 只找最近5根中的阳线
+            bulls = recent_5[recent_5["close"] > recent_5["open"]]
 
-                name = f"信号4 放量反转 {n}根最大量 + {ratio:.1f}倍爆量"
+            if not bulls.empty:
 
-                if allow_signal(name, now_ts):
-                    signals.append(name)
+                bulls = bulls.copy()
+                bulls["body_size"] = bulls["close"] - bulls["open"]
 
-                break
+                # 找实体最大的阳线
+                idx = bulls["body_size"].idxmax()
+                ref_open = sub.loc[idx, "open"]
+
+                # 当前必须阴线
+                if k_now["close"] < k_now["open"] and k_now["mid_price"] > k_now["mid"]:
+
+                    # 收盘跌破强阳开盘价
+                    if k_now["close"] < ref_open:
+
+                        name = "信号5 看空 顶部强阳失守"
+
+                        if allow_signal(name, now_ts):
+                            signals.append(name)
 
     return signals
 
@@ -299,7 +287,7 @@ def scan_history(df):
 
 
 # ==================== 实时检测 ====================
-def check_latest(df):
+def check_k_now(df):
     sigs = detect_signals(df)
 
     if not sigs:
@@ -326,13 +314,13 @@ def check_latest(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 15M 新策略启动")
+    print("BTC 1H 新策略启动")
 
     df = get_candles()
     df = add_indicators(df)
 
     scan_history(df)
-    check_latest(df)
+    check_k_now(df)
 
 
 if __name__ == "__main__":

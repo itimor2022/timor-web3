@@ -40,7 +40,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="15m", limit=5000):
+def get_candles(instId="BTC-USDT", bar="15m", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
@@ -89,31 +89,6 @@ def allow_signal(name, ts):
         return True
 
     return False
-
-
-# ==================== 阳线波峰 ====================
-def find_last_two_bull_peaks(df, n=3):
-    peaks = []
-
-    for i in range(n, len(df) - n):
-        k = df.iloc[i]
-
-        # 必须阳线
-        if k["close"] <= k["open"]:
-            continue
-
-        h = k["high"]
-
-        left = df.iloc[i - n:i]["high"].max()
-        right = df.iloc[i + 1:i + n + 1]["high"].max()
-
-        if h > left and h > right:
-            peaks.append(i)
-
-    if len(peaks) >= 2:
-        return peaks[-2], peaks[-1]
-
-    return None, None
 
 
 # ==================== 信号检测 ====================
