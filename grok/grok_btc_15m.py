@@ -21,8 +21,8 @@ pd.set_option('display.max_colwidth', 1000)
 SIGNAL_COOLDOWN = timedelta(minutes=60)
 last_signal_time = {}
 
-CHAT_ID = "-5264477303"
-TOKEN = "你的TOKEN"
+CHAT_ID = "-5068436114"
+TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 LOG_FILE = "btc_15m_new_signal.txt"
 
