@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟 布林信号策略
+BTC 4小时 布林信号策略
 """
 
 import requests
@@ -16,10 +16,10 @@ pd.set_option('display.max_colwidth', 1000)
 SIGNAL_COOLDOWN = timedelta(minutes=120)
 last_signal_time = {}
 
-CHAT_ID = "-5264477303"
+CHAT_ID = "-4836241115"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_1h_new_signal.txt"
+LOG_FILE = "btc_4h_new_signal.txt"
 
 
 # ==================== Telegram ====================
@@ -35,7 +35,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="1H", limit=1000):
+def get_candles(instId="BTC-USDT", bar="4H", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
@@ -123,7 +123,6 @@ def detect_signals(sub):
 
     k_now = sub.iloc[-1]
     k_prev = sub.iloc[-2]
-    k_prev_10 = sub.tail(20)
 
     body = abs(k_now["close"] - k_now["open"])
     pct = abs(k_now["close"] - k_now["open"]) / k_now["open"]
@@ -145,9 +144,6 @@ def detect_signals(sub):
     # ===============================
     # 信号1：看空 双K实体突破上轨
     # ===============================
-    k_prev["is_bull"] = k_prev["close"] > k_prev["open"]
-    k_now["is_bear"] = k_now["close"] < k_now["open"]
-
     if k_prev["is_bull"] and k_now["is_bear"]:
         if body_break_upper(k_prev) and body_break_upper(k_now):
 
@@ -159,9 +155,6 @@ def detect_signals(sub):
     # ===============================
     # 信号2：看多 双K实体突破下轨
     # ===============================
-    k_prev["is_bear"] = k_prev["close"] < k_prev["open"]
-    k_now["is_bull"] = k_now["close"] > k_now["open"]
-
     if k_prev["is_bear"] and k_now["is_bull"]:
         if body_break_lower(k_prev) and body_break_lower(k_now):
 
@@ -176,7 +169,7 @@ def detect_signals(sub):
     if body > 0:
         if pct >= 0.002:
             # 必须：下影线 > 实体 且 下影线 > 上影线
-            if lower_shadow > body and lower_shadow > upper_shadow and k_now["low"] < k_now["lower"]:
+            if lower_shadow > body and lower_shadow > upper_shadow  and k_now["is_bull"] and k_prev["low"] < k_prev["lower"]:
                 ratio = lower_shadow / body
                 level = None
                 if ratio >= 3:
@@ -196,7 +189,6 @@ def detect_signals(sub):
     # ===============================
     # 信号4：看空 上方压制结构
     # ===============================
-
     if body > 0:
         if pct >= 0.002:
             if (
@@ -220,40 +212,27 @@ def detect_signals(sub):
                         signals.append(name)
 
     # ===============================
-    # 信号5 看空 顶部强阳失守
+    # 信号5：看空 三K顶部转弱结构
     # ===============================
-    recent_20 = sub.iloc[-21:-1]
-    recent_5 = sub.iloc[-7:-1]
+    if len(sub) >= 15:
 
-    if len(recent_20) >= 20 and len(recent_5) >= 5:
+        k1 = sub.iloc[-3]   # 阳线
+        k2 = sub.iloc[-2]   # 阴线
+        k3 = sub.iloc[-1]   # 阴线
 
-        # 20根中的最高点
-        high_20 = recent_20["high"].max()
+        # 结构必须：阳 + 阴 + 阴
+        if k1["is_bull"] and k2["is_bear"] and k3["is_bear"]:
 
-        # 判断最高点是否出现在最近5根中
-        if recent_5["high"].max() == high_20:
+            # 条件1：阳线是前10根最高价
+            prev10 = sub.iloc[-13:-3]
 
-            # 只找最近5根中的阳线
-            bulls = recent_5[recent_5["close"] > recent_5["open"]]
+            if not prev10.empty:
+                if k1["high"] >= prev10["high"].max():
 
-            if not bulls.empty:
-
-                bulls = bulls.copy()
-                bulls["body_size"] = bulls["close"] - bulls["open"]
-
-                # 找实体最大的阳线
-                idx = bulls["body_size"].idxmax()
-                ref_open = sub.loc[idx, "open"]
-
-                # 当前必须阴线
-                if k_now["close"] < k_now["open"] and k_now["mid_price"] > k_now["mid"]:
-
-                    # 收盘跌破强阳开盘价
-                    if k_now["close"] < ref_open:
-
-                        name = "信号5 看空 顶部强阳失守"
-
-                        if allow_signal(name, now_ts):
+                    # 条件2：mid_price 持续下降
+                    if k3["close"] < (k1["open"] + k1["close"]) / 2:
+                        name = "信号5 看空 三K顶部转弱结构"
+                        if allow_signal(name, k3["ts"]):
                             signals.append(name)
 
     return signals

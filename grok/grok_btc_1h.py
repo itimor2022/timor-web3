@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟 布林信号策略
+BTC 1小时 布林信号策略
 """
 
 import requests
@@ -16,7 +16,7 @@ pd.set_option('display.max_colwidth', 1000)
 SIGNAL_COOLDOWN = timedelta(minutes=120)
 last_signal_time = {}
 
-CHAT_ID = "-5264477303"
+CHAT_ID = "-4850300375"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 LOG_FILE = "btc_1h_new_signal.txt"
@@ -123,7 +123,6 @@ def detect_signals(sub):
 
     k_now = sub.iloc[-1]
     k_prev = sub.iloc[-2]
-    k_prev_10 = sub.tail(20)
 
     body = abs(k_now["close"] - k_now["open"])
     pct = abs(k_now["close"] - k_now["open"]) / k_now["open"]
@@ -145,9 +144,6 @@ def detect_signals(sub):
     # ===============================
     # 信号1：看空 双K实体突破上轨
     # ===============================
-    k_prev["is_bull"] = k_prev["close"] > k_prev["open"]
-    k_now["is_bear"] = k_now["close"] < k_now["open"]
-
     if k_prev["is_bull"] and k_now["is_bear"]:
         if body_break_upper(k_prev) and body_break_upper(k_now):
 
@@ -159,9 +155,6 @@ def detect_signals(sub):
     # ===============================
     # 信号2：看多 双K实体突破下轨
     # ===============================
-    k_prev["is_bear"] = k_prev["close"] < k_prev["open"]
-    k_now["is_bull"] = k_now["close"] > k_now["open"]
-
     if k_prev["is_bear"] and k_now["is_bull"]:
         if body_break_lower(k_prev) and body_break_lower(k_now):
 

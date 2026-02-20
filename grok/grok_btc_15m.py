@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟 新布林信号策略
-信号1：
-✔ 当前阴线
-✔ 阴线下穿上轨
-✔ 前一根是阳线
-✔ 前一根阳线 = 最近10根最高点
+BTC 15分钟 布林信号策略
 """
 
 import requests
@@ -73,6 +68,10 @@ def add_indicators(df):
     df["std"] = df["close"].rolling(20).std()
     df["upper"] = df["mid"] + 2 * df["std"]
     df["lower"] = df["mid"] - 2 * df["std"]
+
+    df["is_bull"] = df["close"] > df["open"]
+    df["is_bear"] = df["close"] < df["open"]
+    df["mid_price"] = (df["close"] + df["open"]) / 2
     return df
 
 
