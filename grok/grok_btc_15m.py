@@ -371,34 +371,29 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_latest(df):
-    if len(df) < 2:
-        print("数据不足，无法检测")
-        return
-
-    # 方式A：只检测已闭合的上一根（去掉当前未闭合的K线）
-    sub = df.iloc[:-1].copy()  # 用到倒数第二根作为“最新已闭合”
-
+    sub = df.iloc[:-1]
     sigs = detect_signals(sub)
+
     if not sigs:
-        print("上一根已闭合K线无信号")
+        print("最新K线无信号")
         return
 
-    # 用上一根已闭合的K线来发消息（时间、价格等都用这根）
-    k = sub.iloc[-1]
-    ts = (k["ts"] + pd.Timedelta(hours=7)).strftime("%m-%d %H:%M")  # 显示本地时间
+    k = df.iloc[-1]
+    ts = k["ts"].strftime("%m-%d %H:%M")
 
     msg = "BTC 15M 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.0f}\n\n"
+
     for s in sigs:
         msg += f"• {s}\n"
 
     send_message(msg)
 
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(msg + "\n----------\n")
+        f.write(msg + "\n")
 
-    print("已发送实时信号（基于上一根已闭合K线）")
+    print("已发送实时信号")
 
 
 # ==================== 主程序 ====================
@@ -407,9 +402,8 @@ def main():
 
     df = get_candles()
     df = add_indicators(df)
-
-    scan_history(df)
     check_latest(df)
+    scan_history(df)
 
 
 if __name__ == "__main__":

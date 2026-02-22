@@ -182,9 +182,8 @@ def main():
 
     df = get_candles()
     df = add_indicators(df)
-
-    scan_history(df)
     check_k_now(df)
+    scan_history(df)
 
 
 if __name__ == "__main__":
