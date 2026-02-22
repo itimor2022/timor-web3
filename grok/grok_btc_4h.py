@@ -144,7 +144,8 @@ def detect_signals(sub):
     if body > 0:
         if pct >= 0.002:
             # 必须：下影线 > 实体 且 下影线 > 上影线
-            if lower_shadow > body and lower_shadow > upper_shadow  and k_now["is_bull"] and k_prev["low"] < k_prev["lower"]:
+            if lower_shadow > body and lower_shadow > upper_shadow and k_now["is_bull"] and k_prev["low"] < k_prev[
+                "lower"]:
                 ratio = lower_shadow / body
                 level = None
                 if ratio >= 3:
@@ -191,9 +192,9 @@ def detect_signals(sub):
     # ===============================
     if len(sub) >= 15:
 
-        k1 = sub.iloc[-3]   # 阳线
-        k2 = sub.iloc[-2]   # 阴线
-        k3 = sub.iloc[-1]   # 阴线
+        k1 = sub.iloc[-3]  # 阳线
+        k2 = sub.iloc[-2]  # 阴线
+        k3 = sub.iloc[-1]  # 阴线
 
         # 结构必须：阳 + 阴 + 阴
         if k1["is_bull"] and k2["is_bear"] and k3["is_bear"]:

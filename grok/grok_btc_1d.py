@@ -97,9 +97,9 @@ def detect_signals(sub):
     signals = []
 
     # 取三根K线
-    k1 = sub.iloc[-3]   # 第一根阳线
-    k2 = sub.iloc[-2]   # 第二根阳线
-    k3 = sub.iloc[-1]   # 阴线
+    k1 = sub.iloc[-3]  # 第一根阳线
+    k2 = sub.iloc[-2]  # 第二根阳线
+    k3 = sub.iloc[-1]  # 阴线
 
     now_ts = k3["ts"]
 
@@ -109,7 +109,7 @@ def detect_signals(sub):
     if k1["is_bull"] and k2["is_bull"] and k3["is_bear"]:
 
         # 前6根K线（包含k2）
-        prev6 = sub.iloc[-7:-1]   # 取到k2
+        prev6 = sub.iloc[-7:-1]  # 取到k2
 
         if not prev6.empty:
 
