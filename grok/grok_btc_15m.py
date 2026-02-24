@@ -343,15 +343,18 @@ def detect_signals(sub):
     # =========================
     if len(sub) >= 5:
 
-        last3 = sub.iloc[-5:-1]   # 前3根K线
+        last3 = sub.iloc[-5:-2]   # 前3根K线
 
         # 当前阴线
         cond_now_bear = k_now["close"] < k_now["open"]
 
-        # 开盘价 > 前3根 mid_price
-        cond_open_above_midprice = (k_now["high"] > last3["mid_price"]).all()
+        # 开盘价 > 前3根
+        cond_open_above_midprice = (
+                (k_now["open"] > last3["open"]) &
+                (k_now["open"] > last3["close"])
+        ).all()
 
-        # 收盘价 < 前3根收盘价
+        # 收盘价 < 前3根
         cond_close_below_prev_close = (
                 (k_now["close"] < last3["close"]) &
                 (k_now["close"] < last3["open"])
