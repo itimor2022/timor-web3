@@ -356,6 +356,7 @@ def detect_signals(sub):
 
         # 收盘价 < 前3根
         cond_close_below_prev_close = (
+                (k_now["mid_price"] < last3["mid_price"]) &
                 (k_now["close"] < last3["close"]) &
                 (k_now["close"] < last3["open"])
         ).all()
