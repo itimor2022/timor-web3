@@ -114,13 +114,13 @@ def detect_signals(sub):
     cond_prev_bear = k_prev["close"] < k_prev["open"]
     cond_bull_prev = k_prev["close"] > k_prev["open"]
 
+    prev_body = abs(k_prev["close"] - k_prev["open"])
+    now_body = abs(k_now["close"] - k_now["open"])
+
     # ==================================================
     # 信号1：最高收盘阳线 + 大阴线反包
     # ==================================================
     if cond_bear and cond_bull_prev:
-
-        prev_body = abs(k_prev["close"] - k_prev["open"])
-        now_body = abs(k_now["close"] - k_now["open"])
 
         if now_body > prev_body:
 
@@ -356,7 +356,7 @@ def detect_signals(sub):
 
         # 收盘价 < 前3根
         cond_close_below_prev_close = (
-                (k_now["mid_price"] < last3["mid_price"]) &
+                (now_body / prev_body > 1.68) &
                 (k_now["close"] < last3["close"]) &
                 (k_now["close"] < last3["open"])
         ).all()
