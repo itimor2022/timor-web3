@@ -151,13 +151,14 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_k_now(df):
-    k = df.iloc[-1]
-    sigs = detect_signals(k)
+    sub = df.iloc[:-1]          # 用于检测
+    sigs = detect_signals(sub)
 
     if not sigs:
         print("最新K线无信号")
         return
 
+    k = df.iloc[-1]             # 取最后一根K线（单行）
     ts = k["ts"].strftime("%m-%d %H:%M")
 
     msg = "BTC 1D 新信号触发\n"
