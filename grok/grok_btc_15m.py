@@ -244,7 +244,7 @@ def detect_signals(sub):
 
             if ratio >= 6:
 
-                name = f"信号4 放量反转 {n}根最大量 + {ratio:.1f}倍爆量"
+                name = f"信号4 放量反转 {ratio:.1f}倍爆量 观察后续走势"
 
                 if allow_signal(name, now_ts):
                     signals.append(name)
@@ -252,7 +252,7 @@ def detect_signals(sub):
                 break
 
     # =========================
-    # 信号1：做空 放量跌破下轨
+    # 信号5：做空 放量跌破下轨
     # =========================
     if cond_bear and cond_break_lower:
 
@@ -267,12 +267,12 @@ def detect_signals(sub):
             cond_vol = k_now["vol"] >= prev_bull["vol"] * 4.3
 
             if cond_vol:
-                name = "信号1 做空 放量5倍阴线跌破下轨"
+                name = "信号5 做空 放量5倍阴线跌破下轨"
                 if allow_signal(name, now_ts):
                     signals.append(name)
 
     # =========================
-    # 信号2：做多 4K中轨上方结构
+    # 信号6：做多 4K中轨上方结构
     # =========================
     last4 = sub.iloc[-4:]
 
@@ -296,12 +296,12 @@ def detect_signals(sub):
             cond_open3 and
             cond_first_low_below_mid):
 
-        name = f"信号2 做多 4K阳中轨上方强势结构)"
+        name = f"信号6 做多 4K阳中轨上方强势结构"
         if allow_signal(name, now_ts):
             signals.append(name)
 
     # =========================
-    # 信号3：三阴做空结构
+    # 信号7：三阴做空结构
     # =========================
 
     if cond_three_bear:
@@ -318,12 +318,12 @@ def detect_signals(sub):
         cond_mid_price_down = mp1 > mp2 > mp3
 
         if cross_mid and cond_mid_price_down:
-            name = "信号3 做空 三阴下压穿中轨"
+            name = "信号7 做空 三阴下压穿中轨"
             if allow_signal(name, now_ts):
                 signals.append(name)
 
     # =========================
-    # 信号4：长上影线反转做空
+    # 信号8：长上影线反转做空
     # =========================
     body = abs(k_now["close"] - k_now["open"])
     upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
@@ -334,18 +334,12 @@ def detect_signals(sub):
     cond_upper_4x_lower = upper_shadow >= lower_shadow * 4 if lower_shadow > 0 else True
 
     if k_now["high"] >= k_now["upper"] and cond_upper_3x_body and cond_upper_4x_lower:
-        name = "信号4 做空 超长上影线压制"
+        name = "信号8 做空 超长上影线压制"
         if allow_signal(name, now_ts):
             signals.append(name)
-
-    if k_now["high"] <= k_now["upper"]:
-        name = "信号4 做空 超长上影线压制"
-        if allow_signal(name, now_ts):
-            signals.append(name)
-
 
     # =========================
-    # 信号5：做空 上破结构反杀
+    # 信号9：做空 上破结构反杀
     # =========================
     if len(sub) >= 4:
 
@@ -365,7 +359,7 @@ def detect_signals(sub):
 
         if cond_now_bear and cond_open_above_midprice and cond_close_below_prev_close:
 
-            name = "信号5 做空 上破结构反杀"
+            name = "信号9 做空 上破结构反杀"
 
             if allow_signal(name, now_ts):
                 signals.append(name)
