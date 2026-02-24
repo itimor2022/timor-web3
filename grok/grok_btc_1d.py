@@ -151,16 +151,16 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_k_now(df):
-    sigs = detect_signals(df)
+    k = df.iloc[-1]
+    sigs = detect_signals(k)
 
     if not sigs:
         print("最新K线无信号")
         return
 
-    k = df.iloc[-1]
     ts = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "BTC 15M 新信号触发\n"
+    msg = "BTC 1D 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.0f}\n\n"
 
