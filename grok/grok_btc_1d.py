@@ -63,7 +63,6 @@ def get_candles(instId="BTC-USDT", bar="1D", limit=1000):
 
 # ==================== 布林指标 ====================
 def add_indicators(df):
-    df["mid_price"] = (df["close"] + df["open"]) / 2
     df["mid"] = df["close"].rolling(20).mean()
     df["std"] = df["close"].rolling(20).std()
     df["upper"] = df["mid"] + 2 * df["std"]

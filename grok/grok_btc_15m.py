@@ -63,7 +63,6 @@ def get_candles(instId="BTC-USDT", bar="15m", limit=1000):
 
 # ==================== 布林指标 ====================
 def add_indicators(df):
-    df["mid_price"] = (df["close"] + df["open"]) / 2
     df["mid"] = df["close"].rolling(20).mean()
     df["std"] = df["close"].rolling(20).std()
     df["upper"] = df["mid"] + 2 * df["std"]
@@ -279,14 +278,14 @@ def detect_signals(sub):
 
     # ≥3阳线
     bull_count = (last4["close"] > last4["open"]).sum()
-    cond_bull3 = bull_count >= 3
+    cond_bull3 = bull_count >= 4
 
     # 4根最高价都在中轨上
     cond_high_above_mid = (last4["high"] > last4["mid"]).all()
 
     # ≥3根开盘价在中轨上
     open_above_mid_count = (last4["mid_price"] > last4["mid"]).sum()
-    cond_open3 = open_above_mid_count >= 3
+    cond_open3 = open_above_mid_count >= 4
 
     # 第一根从中轨下方启动
     k1 = last4.iloc[0]
@@ -297,7 +296,7 @@ def detect_signals(sub):
             cond_open3 and
             cond_first_low_below_mid):
 
-        name = f"信号2 做多 4K中轨上方强势结构({bull_count}阳)"
+        name = f"信号2 做多 4K阳中轨上方强势结构)"
         if allow_signal(name, now_ts):
             signals.append(name)
 
@@ -338,6 +337,38 @@ def detect_signals(sub):
         name = "信号4 做空 超长上影线压制"
         if allow_signal(name, now_ts):
             signals.append(name)
+
+    if k_now["high"] <= k_now["upper"]:
+        name = "信号4 做空 超长上影线压制"
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+
+    # =========================
+    # 信号5：做空 上破结构反杀
+    # =========================
+    if len(sub) >= 4:
+
+        last3 = sub.iloc[-4:-1]   # 前3根K线
+
+        # 当前阴线
+        cond_now_bear = k_now["close"] < k_now["open"]
+
+        # 开盘价 > 前3根 mid_price
+        cond_open_above_midprice = (k_now["high"] > last3["mid_price"]).all()
+
+        # 收盘价 < 前3根收盘价
+        cond_close_below_prev_close = (
+                (k_now["close"] < last3["close"]) &
+                (k_now["close"] < last3["open"])
+        ).all()
+
+        if cond_now_bear and cond_open_above_midprice and cond_close_below_prev_close:
+
+            name = "信号5 做空 上破结构反杀"
+
+            if allow_signal(name, now_ts):
+                signals.append(name)
 
     return signals
 
