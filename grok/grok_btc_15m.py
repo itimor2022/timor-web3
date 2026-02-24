@@ -341,9 +341,9 @@ def detect_signals(sub):
     # =========================
     # 信号9：做空 上破结构反杀
     # =========================
-    if len(sub) >= 4:
+    if len(sub) >= 5:
 
-        last3 = sub.iloc[-4:-1]   # 前3根K线
+        last3 = sub.iloc[-5:-1]   # 前3根K线
 
         # 当前阴线
         cond_now_bear = k_now["close"] < k_now["open"]
