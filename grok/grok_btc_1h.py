@@ -120,131 +120,131 @@ def detect_signals(sub):
     # ===============================
     # 信号1：看空 双K实体突破上轨
     # ===============================
-    # if k_prev["is_bull"] and k_now["is_bear"]:
-    #     if body_break_upper(k_prev) and body_break_upper(k_now):
-    #
-    #         name = "信号1 看空 双K实体突破上轨"
-    #
-    #         if allow_signal(name, now_ts):
-    #             signals.append(name)
-    #
-    # # ===============================
-    # # 信号2：看多 双K实体突破下轨
-    # # ===============================
-    # if k_prev["is_bear"] and k_now["is_bull"]:
-    #     if body_break_lower(k_prev) and body_break_lower(k_now):
-    #
-    #         name = "信号2 看多 双K实体突破下轨"
-    #
-    #         if allow_signal(name, now_ts):
-    #             signals.append(name)
-    #
-    # # ===============================
-    # # 信号3：看多 强承接下影结构
-    # # ===============================
-    # if body > 0:
-    #     if pct >= 0.002:
-    #         # 必须：下影线 > 实体 且 下影线 > 上影线
-    #         if lower_shadow > body and lower_shadow > upper_shadow and k_now["low"] < k_now["lower"]:
-    #             ratio = lower_shadow / body
-    #             level = None
-    #             if ratio >= 3:
-    #                 level = "3倍下影(强)"
-    #             elif ratio >= 2:
-    #                 level = "2倍下影(中)"
-    #             elif ratio >= 1:
-    #                 level = "1倍下影(弱)"
-    #
-    #             if level:
-    #
-    #                 name = f"信号3 看多 承接结构 + {level}"
-    #
-    #                 if allow_signal(name, now_ts):
-    #                     signals.append(name)
-    #
-    # # ===============================
-    # # 信号4：看空 上方压制结构
-    # # ===============================
-    #
-    # if body > 0:
-    #     if pct >= 0.002:
-    #         if (
-    #                 upper_shadow > body and
-    #                 upper_shadow > lower_shadow and
-    #                 k_now["high"] > k_now["upper"]
-    #         ):
-    #
-    #             ratio = upper_shadow / body
-    #             level = None
-    #             if ratio >= 3:
-    #                 level = "3倍上影(强)"
-    #             elif ratio >= 2:
-    #                 level = "2倍上影(中)"
-    #             elif ratio >= 1:
-    #                 level = "1倍上影(普通)"
-    #
-    #             if level:
-    #                 name = f"信号4 看空 压制结构 + {level}"
-    #                 if allow_signal(name, now_ts):
-    #                     signals.append(name)
-    #
-    # # ===============================
-    # # 信号5 看空 顶部强阳失守
-    # # ===============================
-    # recent_20 = sub.iloc[-21:-1]
-    # recent_5 = sub.iloc[-7:-1]
-    #
-    # if len(recent_20) >= 20 and len(recent_5) >= 5:
-    #
-    #     # 20根中的最高点
-    #     high_20 = recent_20["high"].max()
-    #
-    #     # 判断最高点是否出现在最近5根中
-    #     if recent_5["high"].max() == high_20:
-    #
-    #         # 只找最近5根中的阳线
-    #         bulls = recent_5[recent_5["close"] > recent_5["open"]]
-    #
-    #         if not bulls.empty:
-    #
-    #             bulls = bulls.copy()
-    #             bulls["body_size"] = bulls["close"] - bulls["open"]
-    #
-    #             # 找实体最大的阳线
-    #             idx = bulls["body_size"].idxmax()
-    #             ref_open = sub.loc[idx, "open"]
-    #
-    #             # 当前必须阴线
-    #             if k_now["close"] < k_now["open"] and k_now["mid_price"] > k_now["mid"]:
-    #
-    #                 # 收盘跌破强阳开盘价
-    #                 if k_now["close"] < ref_open:
-    #
-    #                     name = "信号5 看空 顶部强阳失守"
-    #
-    #                     if allow_signal(name, now_ts):
-    #                         signals.append(name)
+    if k_prev["is_bull"] and k_now["is_bear"]:
+        if body_break_upper(k_prev) and body_break_upper(k_now):
+
+            name = "信号1 看空 双K实体突破上轨"
+
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
+    # ===============================
+    # 信号2：看多 双K实体突破下轨
+    # ===============================
+    if k_prev["is_bear"] and k_now["is_bull"]:
+        if body_break_lower(k_prev) and body_break_lower(k_now):
+
+            name = "信号2 看多 双K实体突破下轨"
+
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
+    # ===============================
+    # 信号3：看多 强承接下影结构
+    # ===============================
+    if body > 0:
+        if pct >= 0.002:
+            # 必须：下影线 > 实体 且 下影线 > 上影线
+            if lower_shadow > body and lower_shadow > upper_shadow and k_now["low"] < k_now["lower"]:
+                ratio = lower_shadow / body
+                level = None
+                if ratio >= 3:
+                    level = "3倍下影(强)"
+                elif ratio >= 2:
+                    level = "2倍下影(中)"
+                elif ratio >= 1:
+                    level = "1倍下影(弱)"
+
+                if level:
+
+                    name = f"信号3 看多 承接结构 + {level}"
+
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+    # ===============================
+    # 信号4：看空 上方压制结构
+    # ===============================
+
+    if body > 0:
+        if pct >= 0.002:
+            if (
+                    upper_shadow > body and
+                    upper_shadow > lower_shadow and
+                    k_now["high"] > k_now["upper"]
+            ):
+
+                ratio = upper_shadow / body
+                level = None
+                if ratio >= 3:
+                    level = "3倍上影(强)"
+                elif ratio >= 2:
+                    level = "2倍上影(中)"
+                elif ratio >= 1:
+                    level = "1倍上影(普通)"
+
+                if level:
+                    name = f"信号4 看空 压制结构 + {level}"
+                    if allow_signal(name, now_ts):
+                        signals.append(name)
+
+    # ===============================
+    # 信号5 看空 顶部强阳失守
+    # ===============================
+    recent_20 = sub.iloc[-21:-1]
+    recent_5 = sub.iloc[-7:-1]
+
+    if len(recent_20) >= 20 and len(recent_5) >= 5:
+
+        # 20根中的最高点
+        high_20 = recent_20["high"].max()
+
+        # 判断最高点是否出现在最近5根中
+        if recent_5["high"].max() == high_20:
+
+            # 只找最近5根中的阳线
+            bulls = recent_5[recent_5["close"] > recent_5["open"]]
+
+            if not bulls.empty:
+
+                bulls = bulls.copy()
+                bulls["body_size"] = bulls["close"] - bulls["open"]
+
+                # 找实体最大的阳线
+                idx = bulls["body_size"].idxmax()
+                ref_open = sub.loc[idx, "open"]
+
+                # 当前必须阴线
+                if k_now["close"] < k_now["open"] and k_now["mid_price"] > k_now["mid"]:
+
+                    # 收盘跌破强阳开盘价
+                    if k_now["close"] < ref_open:
+
+                        name = "信号5 看空 顶部强阳失守"
+
+                        if allow_signal(name, now_ts):
+                            signals.append(name)
 
     # ===============================
     # 信号6 看多 阳线强势上穿中轨
     # ===============================
-    # if k_now["is_bull"]:
-    #
-    #     # 涨幅 > 0.4%
-    #     cond_big_up = k_now["change_pct"] >= 0.25
-    #
-    #     # 实体上穿中轨（开盘在下，收盘在上）
-    #     cond_cross_mid = (
-    #             (k_now["open"] < k_now["mid"]) &
-    #             (k_now["close"] > k_now["mid"])
-    #     )
-    #
-    #     if cond_big_up and cond_cross_mid:
-    #
-    #         name = "信号6 看多 阳线强势上穿中轨"
-    #
-    #         if allow_signal(name, now_ts):
-    #             signals.append(name)
+    if k_now["is_bull"]:
+
+        # 涨幅 > 0.4%
+        cond_big_up = k_now["change_pct"] >= 0.25
+
+        # 实体上穿中轨（开盘在下，收盘在上）
+        cond_cross_mid = (
+                (k_now["open"] < k_now["mid"]) &
+                (k_now["close"] > k_now["mid"])
+        )
+
+        if cond_big_up and cond_cross_mid:
+
+            name = "信号6 看多 阳线强势上穿中轨"
+
+            if allow_signal(name, now_ts):
+                signals.append(name)
 
     # ===============================
     # 信号7 看空 阴线强势下穿中轨
