@@ -71,6 +71,8 @@ def add_indicators(df):
     df["is_bull"] = df["close"] > df["open"]
     df["is_bear"] = df["close"] < df["open"]
     df["mid_price"] = (df["close"] + df["open"]) / 2
+    # 涨幅
+    df["change_pct"] = (df["close"] - df["open"]) / df["open"] * 100
     return df
 
 
@@ -368,6 +370,34 @@ def detect_signals(sub):
             if allow_signal(name, now_ts):
                 signals.append(name)
 
+    # =========================
+    # 信号10：做多 突破中轨强势启动
+    # =========================
+    if len(sub) >= 8:
+
+        # 当前阳线
+        cond_now_bull = k_now["close"] > k_now["open"]
+
+        # 当前涨幅 > 0.4%
+        cond_big_up = k_now["change_pct"]  > 0.2
+
+        # 上穿中轨（开盘在下，收盘在上）
+        cond_cross_mid = (
+                k_now["open"] < k_now["mid"] and
+                k_now["close"] > k_now["mid"]
+        )
+
+        # 前7根最高价全部低于中轨
+        prev7 = sub.iloc[-8:-1]
+        cond_prev_below_mid = (prev7["high"] < prev7["mid"]).all()
+
+        if cond_now_bull and cond_big_up and cond_cross_mid and cond_prev_below_mid:
+
+            name = "信号10 做多 强势上穿中轨启动"
+
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
     return signals
 
 
@@ -413,6 +443,7 @@ def check_latest(df):
     msg = "BTC 15M 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.0f}\n\n"
+    msg += f"涨幅: {k['change_pct']:,.0f}\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"

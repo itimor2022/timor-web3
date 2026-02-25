@@ -71,6 +71,8 @@ def add_indicators(df):
     df["is_bull"] = df["close"] > df["open"]
     df["is_bear"] = df["close"] < df["open"]
     df["mid_price"] = (df["close"] + df["open"]) / 2
+    # 涨幅
+    df["change_pct"] = (df["close"] - df["open"]) / df["open"] * 100
     return df
 
 
@@ -164,6 +166,7 @@ def check_k_now(df):
     msg = "BTC 1D 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.0f}\n\n"
+    msg += f"涨幅: {k['change_pct']:,.0f}\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"
