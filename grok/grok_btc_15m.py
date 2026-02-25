@@ -383,14 +383,14 @@ def detect_signals(sub):
 
         # 上穿中轨（开盘在下，收盘在上）
         cond_cross_mid = (
-                k_now["open"] < k_now["mid"] and
+                k_now["open"] < k_now["mid"] &
                 k_now["close"] > k_now["mid"]
         )
 
         # 前7根最高价全部低于中轨
         prev7 = sub.iloc[-8:-1]
         cond_prev_below_mid = (
-                prev7["open"] < prev7["mid"] and
+                prev7["open"] < prev7["mid"] &
                 prev7["close"] < prev7["mid"]
         ).all()
 
