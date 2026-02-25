@@ -418,7 +418,7 @@ def scan_history(df):
             k = sub.iloc[-1]
             ts = k["ts"].strftime("%Y-%m-%d %H:%M")
 
-            text = f"{ts} | BTC {k['close']:,.0f}\n"
+            text = f"{ts} | BTC {k['close']:,.2f} | {k['change_pct']:,.2f}% \n"
             for s in sigs:
                 text += f" - {s}\n"
             text += "-" * 30 + "\n"
@@ -445,8 +445,8 @@ def check_latest(df):
 
     msg = "BTC 15M 新信号触发\n"
     msg += f"{ts}\n"
-    msg += f"价格: {k['close']:,.0f}\n\n"
-    msg += f"涨幅: {k['change_pct']:,.0f}\n\n"
+    msg += f"价格: {k['close']:,.2f}\n\n"
+    msg += f"涨幅: {k['change_pct']:,.2f}\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"
