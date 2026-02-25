@@ -389,7 +389,10 @@ def detect_signals(sub):
 
         # 前7根最高价全部低于中轨
         prev7 = sub.iloc[-8:-1]
-        cond_prev_below_mid = (prev7["high"] < prev7["mid"]).all()
+        cond_prev_below_mid = (
+                prev7["open"] < prev7["mid"] and
+                prev7["close"] < prev7["mid"]
+        ).all()
 
         if cond_now_bull and cond_big_up and cond_cross_mid and cond_prev_below_mid:
 
