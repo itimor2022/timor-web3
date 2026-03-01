@@ -13,7 +13,7 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=120)
+SIGNAL_COOLDOWN = timedelta(minutes=240)
 last_signal_time = {}
 
 CHAT_ID = "-4850300375"
@@ -73,6 +73,11 @@ def add_indicators(df):
     df["mid_price"] = (df["close"] + df["open"]) / 2
     # 涨幅
     df["change_pct"] = (df["close"] - df["open"]) / df["open"] * 100
+    # bbq
+    df["bbq"] = (df["mid_price"] - df["mid"]).abs()
+    df["bbq_min"] = df["bbq"].rolling(7).min()
+    # ema
+    df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
     return df
 
 
@@ -97,16 +102,17 @@ def detect_signals(sub):
 
     signals = []
 
-    k_now = sub.iloc[-1]
-    k_prev = sub.iloc[-2]
+    k1 = sub.iloc[-1]
+    k2 = sub.iloc[-2]
+    k3 = sub.iloc[-3]
 
-    body = abs(k_now["close"] - k_now["open"])
-    pct = abs(k_now["close"] - k_now["open"]) / k_now["open"]
+    body = abs(k1["close"] - k1["open"])
+    pct = abs(k1["close"] - k1["open"]) / k1["open"]
 
-    upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
-    lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
+    upper_shadow = k1["high"] - max(k1["open"], k1["close"])
+    lower_shadow = min(k1["open"], k1["close"]) - k1["low"]
 
-    now_ts = k_now["ts"]
+    now_ts = k1["ts"]
 
     # ===============================
     # 工具函数：实体突破判断
@@ -120,8 +126,8 @@ def detect_signals(sub):
     # ===============================
     # 信号1：看空 双K实体突破上轨
     # ===============================
-    if k_prev["is_bull"] and k_now["is_bear"]:
-        if body_break_upper(k_prev) and body_break_upper(k_now):
+    if k2["is_bull"] and k1["is_bear"]:
+        if body_break_upper(k2) and body_break_upper(k1):
 
             name = "信号1 看空 双K实体突破上轨"
 
@@ -131,8 +137,8 @@ def detect_signals(sub):
     # ===============================
     # 信号2：看多 双K实体突破下轨
     # ===============================
-    if k_prev["is_bear"] and k_now["is_bull"]:
-        if body_break_lower(k_prev) and body_break_lower(k_now):
+    if k2["is_bear"] and k1["is_bull"]:
+        if body_break_lower(k2) and body_break_lower(k1):
 
             name = "信号2 看多 双K实体突破下轨"
 
@@ -145,7 +151,7 @@ def detect_signals(sub):
     if body > 0:
         if pct >= 0.002:
             # 必须：下影线 > 实体 且 下影线 > 上影线
-            if lower_shadow > body and lower_shadow > upper_shadow and k_now["low"] < k_now["lower"]:
+            if lower_shadow > body and lower_shadow > upper_shadow and k1["low"] < k1["lower"]:
                 ratio = lower_shadow / body
                 level = None
                 if ratio >= 3:
@@ -171,7 +177,7 @@ def detect_signals(sub):
             if (
                     upper_shadow > body and
                     upper_shadow > lower_shadow and
-                    k_now["high"] > k_now["upper"]
+                    k1["high"] > k1["upper"]
             ):
 
                 ratio = upper_shadow / body
@@ -215,10 +221,10 @@ def detect_signals(sub):
                 ref_open = sub.loc[idx, "open"]
 
                 # 当前必须阴线
-                if k_now["close"] < k_now["open"] and k_now["mid_price"] > k_now["mid"]:
+                if k1["close"] < k1["open"] and k1["mid_price"] > k1["mid"]:
 
                     # 收盘跌破强阳开盘价
-                    if k_now["close"] < ref_open:
+                    if k1["close"] < ref_open:
 
                         name = "信号5 看空 顶部强阳失守"
 
@@ -228,15 +234,15 @@ def detect_signals(sub):
     # ===============================
     # 信号6 看多 阳线强势上穿中轨
     # ===============================
-    if k_now["is_bull"]:
+    if k1["is_bull"]:
 
         # 涨幅 > 0.4%
-        cond_big_up = k_now["change_pct"] >= 0.25
+        cond_big_up = k1["change_pct"] >= 0.25
 
         # 实体上穿中轨（开盘在下，收盘在上）
         cond_cross_mid = (
-                (k_now["open"] < k_now["mid"]) &
-                (k_now["close"] > k_now["mid"])
+                (k1["open"] < k1["mid"]) &
+                (k1["close"] > k1["mid"])
         )
 
         if cond_big_up and cond_cross_mid:
@@ -249,15 +255,15 @@ def detect_signals(sub):
     # ===============================
     # 信号7 看空 阴线强势下穿中轨
     # ===============================
-    if k_now["is_bear"]:
+    if k1["is_bear"]:
 
         # 跌幅 > 0.4%
-        cond_big_down = k_now["change_pct"] <= -0.25
+        cond_big_down = k1["change_pct"] <= -0.25
 
         # 实体下穿中轨（开盘在上，收盘在下）
         cond_cross_mid_down = (
-                (k_now["open"] > k_now["mid"]) &
-                (k_now["close"] < k_now["mid"])
+                (k1["open"] > k1["mid"]) &
+                (k1["close"] < k1["mid"])
         )
 
         if cond_big_down and cond_cross_mid_down:
@@ -266,6 +272,86 @@ def detect_signals(sub):
 
             if allow_signal(name, now_ts):
                 signals.append(name)
+
+    # ===============================
+    # 信号8 看空 2连阴 + Boll开口向下
+    # ===============================
+    if len(sub) >= 25:
+        # 条件1：2连阴
+        cond_two_bear = (
+                k2["is_bear"] and
+                k1["is_bear"]
+        )
+
+        # 条件2：
+        cond_boll_down = (
+                k1["mid_price"] < k2["mid_price"]
+        )
+
+        # 条件2.1
+        prev_cross = (
+                k2["open"] > k2["mid"] and
+                k2["close"] < k2["mid"]
+        )
+
+        now_cross = (
+                k1["open"] > k1["mid"] and
+                k1["close"] < k1["mid"]
+        )
+
+        # 条件3：收盘价在中轨下面
+        cond_close_boll_mid = (
+                (k1["close"] < k1["mid"]) &
+                (k2["close"] < k2["mid"])
+        )
+
+        if cond_two_bear and cond_close_boll_mid and (cond_boll_down or prev_cross or now_cross):
+
+            name = "信号8 看空 2连阴 + Boll向下"
+
+            if allow_signal(name, k1["ts"]):
+                signals.append(name)
+
+    # ===============================
+    # 信号9 看多 2连阳 + Boll开口向上
+    # ===============================
+
+    if len(sub) >= 25:
+        # 条件1：2连阳
+        cond_two_bear = (
+                k2["is_bull"] and
+                k1["is_bull"]
+        )
+
+        # 条件2：
+        cond_boll_down = (
+                k1["mid_price"] > k2["mid_price"]
+        )
+
+        # 条件2.1
+        prev_cross = (
+                k2["open"] < k2["mid"] and
+                k2["close"] > k2["mid"]
+        )
+
+        now_cross = (
+                k1["open"] < k1["mid"] and
+                k1["close"] > k1["mid"]
+        )
+
+        # 条件3：收盘价在中轨上面
+        cond_close_boll_mid = (
+                (k1["close"] > k1["mid"]) &
+                (k2["close"] > k2["mid"])
+        )
+
+        if cond_two_bear and cond_close_boll_mid and (cond_boll_down or prev_cross or now_cross):
+
+            name = "信号9 看多 2连阳 + Boll向上"
+
+            if allow_signal(name, k1["ts"]):
+                signals.append(name)
+
     return signals
 
 
@@ -297,7 +383,7 @@ def scan_history(df):
 
 
 # ==================== 实时检测 ====================
-def check_k_now(df):
+def check_latest(df):
     sub = df.iloc[:-1]  # 用于检测
     sigs = detect_signals(sub)
 
@@ -310,7 +396,7 @@ def check_k_now(df):
 
     msg = "BTC 1H 新信号触发\n"
     msg += f"{ts}\n"
-    msg += f"价格: {k['close']:,.2f}\n\n"
+    msg += f"价格: {k['close']:,.2f}\n"
     msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
@@ -330,7 +416,7 @@ def main():
 
     df = get_candles()
     df = add_indicators(df)
-    check_k_now(df)
+    check_latest(df)
     scan_history(df)
 
 

@@ -256,7 +256,7 @@ def check_k_now(df):
 
     msg = "BTC 4H 新信号触发\n"
     msg += f"{ts}\n"
-    msg += f"价格: {k['close']:,.2f}\n\n"
+    msg += f"价格: {k['close']:,.2f}\n"
     msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
