@@ -318,7 +318,7 @@ def detect_signals(sub):
 
     if len(sub) >= 25:
         # 条件1：2连阳
-        cond_two_bear = (
+        cond_two_bull = (
                 k2["is_bull"] and
                 k1["is_bull"]
         )
@@ -345,7 +345,7 @@ def detect_signals(sub):
                 (k2["close"] > k2["mid"])
         )
 
-        if cond_two_bear and cond_close_boll_mid and (cond_boll_down or prev_cross or now_cross):
+        if cond_two_bull and cond_close_boll_mid and (cond_boll_down or prev_cross or now_cross):
 
             name = "信号9 看多 2连阳 + Boll向上"
 
