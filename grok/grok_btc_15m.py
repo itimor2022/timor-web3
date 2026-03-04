@@ -108,6 +108,9 @@ def detect_signals(sub):
     k4 = sub.iloc[-4]
     last3 = sub.iloc[-3:]
 
+    vol_now = k1["vol"]
+    vol_prev = k2["vol"]
+
     now_ts = k1["ts"]
     cond_bull = k1["open"] < k1["close"]
     cond_bear = k1["close"] < k1["open"]
@@ -298,11 +301,7 @@ def detect_signals(sub):
     # =========================
     # 信号7：3倍放量 观察反转
     # =========================
-    if len(sub) >= 2:
-
-        vol_now = k1["vol"]
-        vol_prev = k2["vol"]
-
+    if len(sub) >= 2 and vol_now>110:
         if vol_prev > 0:
             vol_ratio = vol_now / vol_prev
         else:
@@ -334,7 +333,7 @@ def scan_history(df):
             k = sub.iloc[-1]
             ts = k["ts"].strftime("%Y-%m-%d %H:%M")
 
-            text = f"{ts} | BTC {k['close']:,.2f} | {k['change_pct']:,.2f}% \n"
+            text = f"{ts} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
             for s in sigs:
                 text += f" - {s}\n"
             text += "-" * 30 + "\n"
@@ -362,7 +361,8 @@ def check_latest(df):
     msg = "BTC 15M 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.2f}\n"
-    msg += f"涨幅: {k['change_pct']:,.2f}\n\n"
+    msg += f"成交量: {k['vol']:,.2f}\n"
+    msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"
