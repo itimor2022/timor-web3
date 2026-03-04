@@ -13,7 +13,7 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=60)
+SIGNAL_COOLDOWN = timedelta(minutes=30)
 last_signal_time = {}
 
 CHAT_ID = "-5068436114"
@@ -124,27 +124,34 @@ def detect_signals(sub):
     cond_small_body = prev_body / now_body
 
     # ==================================================
-    # 信号1：最高收盘阳线 + 大阴线反包
+    # 信号1：最高收盘阳线（加强版 双K破高）
     # ==================================================
-    if cond_bear and cond_bull_prev:
+    window = sub.iloc[-10:-1]
+    highest_close = window["high"].max()
 
-        if now_body > prev_body:
+    # 最近4根K线
+    last4 = sub.iloc[-4:]
 
-            for n in [80, 50, 20]:
-                if len(sub) < n + 2:
-                    continue
+    # 统计突破次数
+    break_count = 0
 
-                window = sub.iloc[-n - 1:-1]
-                highest_close = window["close"].max()
+    for _, row in last4.iterrows():
+        if row["high"] >= highest_close and row["high"] > row["upper"]:
+            break_count += 1
 
-                if k2["close"] >= highest_close:
+    # 当前K线实体更大
+    if k1["high"] >= highest_close and k1["high"] > k1["upper"]:
 
-                    name = f"信号1 做空 {n}根最高收盘阳线 + 大阴线反包"
+        # 普通信号
+        name = "信号1 价格升天 最高收盘阳线"
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
-
-                    break
+        # 加强报警：双K破高
+        if break_count >= 2:
+            strong_name = "信号11 加强版 双K破高"
+            if allow_signal(strong_name, now_ts):
+                signals.append(strong_name)
 
     # ==================================================
     # 信号2：两连阴 + 上轨突破回落
@@ -231,7 +238,6 @@ def detect_signals(sub):
 
                     break
 
-
     # =========================
     # 信号4：二阴下跌做空
     # =========================
@@ -301,7 +307,7 @@ def detect_signals(sub):
     # =========================
     # 信号7：3倍放量 观察反转
     # =========================
-    if len(sub) >= 2 and vol_now>110:
+    if len(sub) >= 2 and vol_now > 110:
         if vol_prev > 0:
             vol_ratio = vol_now / vol_prev
         else:

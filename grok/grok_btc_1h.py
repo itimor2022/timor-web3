@@ -105,6 +105,8 @@ def detect_signals(sub):
     k1 = sub.iloc[-1]
     k2 = sub.iloc[-2]
     k3 = sub.iloc[-3]
+    last_3 = sub.iloc[-3:]
+    last_5 = sub.iloc[-5:]
 
     body = abs(k1["close"] - k1["open"])
     pct = abs(k1["close"] - k1["open"]) / k1["open"]
@@ -352,6 +354,7 @@ def detect_signals(sub):
             if allow_signal(name, k1["ts"]):
                 signals.append(name)
 
+
     return signals
 
 
@@ -367,7 +370,7 @@ def scan_history(df):
 
         if sigs:
             k = sub.iloc[-1]
-            ts = k["ts"].strftime("%Y-%m-%d %H:%M")
+            ts = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
 
             text = f"{ts} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
             for s in sigs:
@@ -392,8 +395,7 @@ def check_latest(df):
         return
 
     k = df.iloc[-1]  # 取最后一根K线（单行）
-    ts = k["ts"].strftime("%m-%d %H:%M")
-
+    ts = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
     msg = "BTC 1H 新信号触发\n"
     msg += f"{ts}\n"
     msg += f"价格: {k['close']:,.2f}\n"
