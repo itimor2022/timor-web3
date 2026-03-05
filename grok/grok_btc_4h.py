@@ -13,7 +13,7 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=120)
+SIGNAL_COOLDOWN = timedelta(minutes=480)
 last_signal_time = {}
 
 CHAT_ID = "-4836241115"
@@ -97,120 +97,46 @@ def detect_signals(sub):
 
     signals = []
 
-    k_now = sub.iloc[-1]
-    k_prev = sub.iloc[-2]
+    k1 = sub.iloc[-1]
+    k2 = sub.iloc[-2]
 
-    body = abs(k_now["close"] - k_now["open"])
-    pct = abs(k_now["close"] - k_now["open"]) / k_now["open"]
+    prev_body = abs(k2["close"] - k2["open"])
+    now_body = abs(k1["close"] - k1["open"])
 
-    upper_shadow = k_now["high"] - max(k_now["open"], k_now["close"])
-    lower_shadow = min(k_now["open"], k_now["close"]) - k_now["low"]
-
-    now_ts = k_now["ts"]
+    now_ts = k1["ts"]
 
     # ===============================
-    # 工具函数：实体突破判断
+    # 信号1：看空 关键阳线转弱
     # ===============================
-    def body_break_upper(k):
-        return k["open"] > k["upper"] or k["close"] > k["upper"]
+    if k1["is_bear"] and k1["mid_price"] < k2["mid_price"]:
+        # 向前找最近阳线（允许上一根）
+        target_bull = None
+        # name = "信号1 看空 关键阳线转弱"
+        #
+        # if allow_signal(name, now_ts):
+        #     signals.append(name)
 
-    def body_break_lower(k):
-        return k["open"] < k["lower"] or k["close"] < k["lower"]
+        for i in range(len(sub) - 2, -1, -1):
+            k = sub.iloc[i]
 
-    # ===============================
-    # 信号1：看空 双K实体突破上轨
-    # ===============================
-    if k_prev["is_bull"] and k_now["is_bear"]:
-        if body_break_upper(k_prev) and body_break_upper(k_now):
+            if k["is_bull"]:
+                target_bull = k
+                bull_index = i
+                break
 
-            name = "信号1 看空 双K实体突破上轨"
+        if target_bull is not None:
 
-            if allow_signal(name, now_ts):
-                signals.append(name)
+            # 条件2：该阳线是前10K最高收盘价
+            if bull_index >= 6:
 
-    # ===============================
-    # 信号2：看多 双K实体突破下轨
-    # ===============================
-    if k_prev["is_bear"] and k_now["is_bull"]:
-        if body_break_lower(k_prev) and body_break_lower(k_now):
+                prev10 = sub.iloc[bull_index - 6:bull_index]
 
-            name = "信号2 看多 双K实体突破下轨"
+                if target_bull["close"] >= prev10["close"].max():
 
-            if allow_signal(name, now_ts):
-                signals.append(name)
-
-    # ===============================
-    # 信号3：看多 强承接下影结构
-    # ===============================
-    if body > 0:
-        if pct >= 0.002:
-            # 必须：下影线 > 实体 且 下影线 > 上影线
-            if lower_shadow > body and lower_shadow > upper_shadow and k_now["is_bull"] and k_prev["low"] < k_prev[
-                "lower"]:
-                ratio = lower_shadow / body
-                level = None
-                if ratio >= 3:
-                    level = "3倍下影(强)"
-                elif ratio >= 2:
-                    level = "2倍下影(中)"
-                elif ratio >= 1:
-                    level = "1倍下影(弱)"
-
-                if level:
-
-                    name = f"信号3 看多 承接结构 + {level}"
+                    name = "信号1 看空 关键阳线转弱"
 
                     if allow_signal(name, now_ts):
                         signals.append(name)
-
-    # ===============================
-    # 信号4：看空 上方压制结构
-    # ===============================
-    if body > 0:
-        if pct >= 0.002:
-            if (
-                    upper_shadow > body and
-                    upper_shadow > lower_shadow and
-                    k_now["high"] > k_now["upper"]
-            ):
-
-                ratio = upper_shadow / body
-                level = None
-                if ratio >= 3:
-                    level = "3倍上影(强)"
-                elif ratio >= 2:
-                    level = "2倍上影(中)"
-                elif ratio >= 1:
-                    level = "1倍上影(普通)"
-
-                if level:
-                    name = f"信号4 看空 压制结构 + {level}"
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
-
-    # ===============================
-    # 信号5：看空 三K顶部转弱结构
-    # ===============================
-    if len(sub) >= 15:
-
-        k1 = sub.iloc[-3]  # 阳线
-        k2 = sub.iloc[-2]  # 阴线
-        k3 = sub.iloc[-1]  # 阴线
-
-        # 结构必须：阳 + 阴 + 阴
-        if k1["is_bull"] and k2["is_bear"] and k3["is_bear"]:
-
-            # 条件1：阳线是前10根最高价
-            prev10 = sub.iloc[-13:-3]
-
-            if not prev10.empty:
-                if k1["high"] >= prev10["high"].max():
-
-                    # 条件2：mid_price 持续下降
-                    if k3["close"] < (k1["open"] + k1["close"]) / 2:
-                        name = "信号5 看空 三K顶部转弱结构"
-                        if allow_signal(name, k3["ts"]):
-                            signals.append(name)
 
     return signals
 
@@ -227,9 +153,10 @@ def scan_history(df):
 
         if sigs:
             k = sub.iloc[-1]
-            ts = k["ts"].strftime("%Y-%m-%d %H:%M")
+            ts = k["ts"].strftime("%m-%d %H:%M")
+            ts2 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
 
-            text = f"{ts} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
+            text = f"{ts} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
             for s in sigs:
                 text += f" - {s}\n"
             text += "-" * 30 + "\n"
@@ -244,18 +171,19 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_k_now(df):
-    sub = df.iloc[:-1]          # 用于检测
+    sub = df.iloc[:-1]  # 用于检测
     sigs = detect_signals(sub)
 
     if not sigs:
         print("最新K线无信号")
         return
 
-    k = df.iloc[-1]             # 取最后一根K线（单行）
+    k = df.iloc[-1]  # 取最后一根K线（单行）
     ts = k["ts"].strftime("%m-%d %H:%M")
+    ts2 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
 
     msg = "BTC 4H 新信号触发\n"
-    msg += f"{ts}\n"
+    msg += f"{ts} ~ {ts2}\n"
     msg += f"价格: {k['close']:,.2f}\n"
     msg += f"成交量: {k['vol']:,.2f}\n"
     msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
@@ -273,12 +201,12 @@ def check_k_now(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 1H 新策略启动")
+    print("BTC 4H 新策略启动")
 
     df = get_candles()
     df = add_indicators(df)
-    check_k_now(df)
     scan_history(df)
+    check_k_now(df)
 
 
 if __name__ == "__main__":
