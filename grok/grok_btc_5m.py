@@ -111,13 +111,14 @@ def detect_signals(sub):
     avg_vol = prev3["vol"].mean()
 
     vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
-
-    if vol_ratio >= 4:
-
-        if vol_ratio > 6:
-            name = f"信号1 爆量 🟥🟥🟥{vol_ratio:.2f}倍 🟥🟥🟥"
-        else:
-            name = f"信号1 爆量 🟡🟡🟡{vol_ratio:.2f}倍 🟡🟡🟡"
+    if vol_ratio>4:
+        match vol_ratio:
+            case x if x >= 4:
+                name = f"信号1 一般爆量 🟡🟡🟡{x:.2f}倍 🟡🟡🟡"
+            case x if x >= 6:
+                name = f"信号1 超级爆量 💢💢💢{x:.2f}倍 💢💢💢"
+            case x if x >= 8:
+                name = f"信号1 屌爆了啊 🧨🧨🧨{x:.2f}倍 🧨🧨🧨"
 
         if allow_signal(name, now_ts):
             signals.append(name)
