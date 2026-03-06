@@ -98,12 +98,12 @@ def detect_signals(sub):
     signals = []
 
     # 取三根K线
-    k1 = sub.iloc[-1]  # 阴线
+    k1 = sub.iloc[-1]
 
     now_ts = k1["ts"]
 
     # 前3根K线成交量
-    prev3 = sub.iloc[-6:-1]
+    prev3 = sub.iloc[-5:-1]
 
     avg_vol = prev3["vol"].mean()
 
