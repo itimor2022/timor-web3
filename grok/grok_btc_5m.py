@@ -113,9 +113,9 @@ def detect_signals(sub):
     cond_vol = vol_ratio >= 4
 
     if cond_vol>6:
-        name = f"信号1 观察 爆量🟥🟥🟥{vol_ratio:.2f}🟥🟥🟥"
+        name = f"信号1 爆量 🟥🟥🟥{vol_ratio:.2f}倍 🟥🟥🟥"
     else:
-        name = f"信号1 观察 爆量🟡🟡🟡{vol_ratio:.2f}🟡🟡🟡"
+        name = f"信号1 爆量 🟡🟡🟡{vol_ratio:.2f}倍 🟡🟡🟡"
 
     if allow_signal(name, now_ts):
         signals.append(name)
@@ -169,7 +169,7 @@ def check_k_now(df):
     msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
-        msg += f"🔴 <b>{s}</b>\n"
+        msg += f"🔴 {s} \n"
 
     send_message(msg)
 
