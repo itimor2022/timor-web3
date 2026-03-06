@@ -364,11 +364,11 @@ def check_latest(df):
     k = df.iloc[-1]  # 取最后一根K线（单行）
     ts = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "BTC 15M 新信号触发\n"
-    msg += f"{ts}\n"
-    msg += f"价格: {k['close']:,.2f}\n"
-    msg += f"成交量: {k['vol']:,.2f}\n"
-    msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
+    msg = "🚨 BTC 15M 新信号触发\n"
+    msg += f"⏰ 时间: {ts}\n"
+    msg += f"💰 价格: {k['close']:,.2f}\n"
+    msg += f"📊 成交量: {k['vol']:,.2f}\n"
+    msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
         msg += f"• {s}\n"

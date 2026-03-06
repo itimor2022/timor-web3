@@ -112,11 +112,13 @@ def detect_signals(sub):
 
     cond_vol = vol_ratio >= 4
 
-    if cond_vol:
-        name = f"信号1 观察 爆量({vol_ratio:.2f}x)"
+    if cond_vol>6:
+        name = f"信号1 观察 爆量🟥🟥🟥{vol_ratio:.2f}🟥🟥🟥"
+    else:
+        name = f"信号1 观察 爆量🟡🟡🟡{vol_ratio:.2f}🟡🟡🟡"
 
-        if allow_signal(name, now_ts):
-            signals.append(name)
+    if allow_signal(name, now_ts):
+        signals.append(name)
 
     return signals
 
@@ -160,14 +162,14 @@ def check_k_now(df):
     k = df.iloc[-1]  # 取最后一根K线（单行）
     ts = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "BTC 1D 新信号触发\n"
-    msg += f"{ts}\n"
-    msg += f"价格: {k['close']:,.2f}\n"
-    msg += f"成交量: {k['vol']:,.2f}\n"
-    msg += f"涨幅: {k['change_pct']:,.2f}%\n\n"
+    msg = "🚨 BTC 5m 新信号触发\n"
+    msg += f"⏰ 时间: {ts}\n"
+    msg += f"💰 价格: {k['close']:,.2f}\n"
+    msg += f"📊 成交量: {k['vol']:,.2f}\n"
+    msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
-        msg += f"• {s}\n"
+        msg += f"🔴 • {s}\n"
 
     send_message(msg)
 
