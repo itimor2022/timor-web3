@@ -97,28 +97,46 @@ def detect_signals(sub):
 
     signals = []
 
-    # 取三根K线
+    # 取K线
     k1 = sub.iloc[-1]
+    k2 = sub.iloc[-2]
 
     now_ts = k1["ts"]
 
-    # 前3根K线成交量
-    prev3 = sub.iloc[-5:-1]
+    # ====================
+    # 信号1 爆量
+    # ====================
 
+    prev3 = sub.iloc[-5:-1]
     avg_vol = prev3["vol"].mean()
 
-    # 计算成交量倍数
     vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
 
-    cond_vol = vol_ratio >= 4
+    if vol_ratio >= 4:
 
-    if cond_vol>6:
-        name = f"信号1 爆量 🟥🟥🟥{vol_ratio:.2f}倍 🟥🟥🟥"
-    else:
-        name = f"信号1 爆量 🟡🟡🟡{vol_ratio:.2f}倍 🟡🟡🟡"
+        if vol_ratio > 6:
+            name = f"信号1 爆量 🟥🟥🟥{vol_ratio:.2f}倍 🟥🟥🟥"
+        else:
+            name = f"信号1 爆量 🟡🟡🟡{vol_ratio:.2f}倍 🟡🟡🟡"
 
-    if allow_signal(name, now_ts):
-        signals.append(name)
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ====================
+    # 信号2 上穿布林上轨
+    # ====================
+
+    cond_break_upper = (
+            k2["close"] <= k2["upper"] and
+            k1["close"] > k1["upper"]
+    )
+
+    if cond_break_upper:
+
+        name = "信号2 突破布林上轨 🚀🚀🚀"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
     return signals
 
