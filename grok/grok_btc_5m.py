@@ -13,13 +13,13 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=120)
+SIGNAL_COOLDOWN = timedelta(minutes=60)
 last_signal_time = {}
 
 CHAT_ID = "-5264477303"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_1d_new_signal.txt"
+LOG_FILE = "btc_5m_new_signal.txt"
 
 
 # ==================== Telegram ====================
@@ -35,7 +35,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="1D", limit=1000):
+def get_candles(instId="BTC-USDT", bar="5m", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
@@ -98,28 +98,25 @@ def detect_signals(sub):
     signals = []
 
     # 取三根K线
-    k1 = sub.iloc[-3]  # 第一根阳线
-    k2 = sub.iloc[-2]  # 第二根阳线
-    k3 = sub.iloc[-1]  # 阴线
+    k1 = sub.iloc[-1]  # 阴线
 
-    now_ts = k3["ts"]
+    now_ts = k1["ts"]
 
-    # ===============================
-    # 信号1：看空 2阳后接阴 + 第二根阳线是前6根最高点
-    # ===============================
-    if k1["is_bull"] and k2["is_bull"] and k3["is_bear"]:
+    # 前3根K线成交量
+    prev3 = sub.iloc[-6:-1]
 
-        # 前6根K线（包含k2）
-        prev6 = sub.iloc[-7:-1]  # 取到k2
+    avg_vol = prev3["vol"].mean()
 
-        if not prev6.empty:
+    # 计算成交量倍数
+    vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
 
-            if k2["high"] >= prev6["high"].max():
+    cond_vol = vol_ratio >= 4
 
-                name = "信号1 看空 2阳后接阴 + 第2阳线6K最高"
+    if cond_vol:
+        name = f"信号1 观察 爆量({vol_ratio:.2f}x)"
 
-                if allow_signal(name, now_ts):
-                    signals.append(name)
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
     return signals
 
@@ -153,14 +150,14 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_k_now(df):
-    sub = df.iloc[:-1]          # 用于检测
+    sub = df.iloc[:-1]  # 用于检测
     sigs = detect_signals(sub)
 
     if not sigs:
         print("最新K线无信号")
         return
 
-    k = df.iloc[-1]             # 取最后一根K线（单行）
+    k = df.iloc[-1]  # 取最后一根K线（单行）
     ts = k["ts"].strftime("%m-%d %H:%M")
 
     msg = "BTC 1D 新信号触发\n"
