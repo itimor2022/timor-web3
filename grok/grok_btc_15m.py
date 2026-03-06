@@ -371,7 +371,7 @@ def check_latest(df):
     msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
-        msg += f"• {s}\n"
+        msg += f"🔴 <b>{s}</b>\n"
 
     send_message(msg)
 
