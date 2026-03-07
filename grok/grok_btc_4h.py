@@ -183,7 +183,7 @@ def check_k_now(df):
     ts2 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
 
     msg = "🚨 BTC 4H 新信号触发\n"
-    msg += f"⏰ 时间: {ts}\n"
+    msg += f"⏰ 时间: {ts} ~ {ts2}\n"
     msg += f"💰 价格: {k['close']:,.2f}\n"
     msg += f"📊 成交量: {k['vol']:,.2f}\n"
     msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
