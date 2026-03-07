@@ -370,10 +370,10 @@ def scan_history(df):
 
         if sigs:
             k = sub.iloc[-1]
-            ts = k["ts"].strftime("%m-%d %H:%M")
-            ts2 = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
+            ts1 = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
+            ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-            text = f"{ts} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
+            text = f"{ts1} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
             for s in sigs:
                 text += f" - {s}\n"
             text += "-" * 30 + "\n"
@@ -396,11 +396,11 @@ def check_latest(df):
         return
 
     k = df.iloc[-1]  # 取最后一根K线（单行）
-    ts = k["ts"].strftime("%m-%d %H:%M")
-    ts2 = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
+    ts1 = (k["ts"] - timedelta(hours=1)).strftime("%m-%d %H:%M")
+    ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "🚨 BTC 4H 新信号触发\n"
-    msg += f"⏰ 时间: {ts} ~ {ts2}\n"
+    msg = "🚨 BTC 1H 新信号触发\n"
+    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
     msg += f"💰 价格: {k['close']:,.2f}\n"
     msg += f"📊 成交量: {k['vol']:,.2f}\n"
     msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
