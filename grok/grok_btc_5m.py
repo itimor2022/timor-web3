@@ -114,11 +114,11 @@ def detect_signals(sub):
     if vol_ratio>4:
         match vol_ratio:
             case x if x >= 4:
-                name = f"信号1 一般爆量 🟡🟡🟡{x:.2f}倍 🟡🟡🟡"
+                name = f"信号1 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
             case x if x >= 6:
-                name = f"信号1 超级爆量 💢💢💢{x:.2f}倍 💢💢💢"
+                name = f"信号1 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
             case x if x >= 8:
-                name = f"信号1 屌爆了啊 🧨🧨🧨{x:.2f}倍 🧨🧨🧨"
+                name = f"信号1 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
 
         if allow_signal(name, now_ts):
             signals.append(name)
