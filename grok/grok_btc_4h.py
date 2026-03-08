@@ -35,7 +35,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="4H", limit=1000):
+def get_candles(instId="BTC-USDT-SWAP", bar="4H", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
