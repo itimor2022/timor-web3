@@ -35,7 +35,7 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT", bar="5m", limit=1000):
+def get_candles(instId="BTC-USDT-SWAP", bar="5m", limit=1000):
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
@@ -73,6 +73,8 @@ def add_indicators(df):
     df["mid_price"] = (df["close"] + df["open"]) / 2
     # 涨幅
     df["change_pct"] = (df["close"] - df["open"]) / df["open"] * 100
+    # 实体大小
+    df["body"] = (df["close"] - df["open"]).abs()
     return df
 
 
@@ -100,24 +102,23 @@ def detect_signals(sub):
     # 取K线
     k1 = sub.iloc[-1]
     k2 = sub.iloc[-2]
+    prev3 = sub.iloc[-5:-1]
 
     now_ts = k1["ts"]
 
     # ====================
     # 信号1 爆量
     # ====================
-
-    prev3 = sub.iloc[-5:-1]
     avg_vol = prev3["vol"].mean()
 
     vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
     if vol_ratio>4:
         match vol_ratio:
-            case x if x >= 8:
+            case x if x >= 7.3:
                 name = f"信号1 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
-            case x if x >= 6:
+            case x if x >= 5.7:
                 name = f"信号1 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
-            case x if x >= 4:
+            case x if x >= 3.2:
                 name = f"信号1 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
 
         if allow_signal(name, now_ts):
