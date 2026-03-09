@@ -193,6 +193,56 @@ def detect_signals(sub):
         if allow_signal(name, now_ts):
             signals.append(name)
 
+    # ====================
+    # 信号5 看多 下轨反弹
+    # ====================
+
+    prev5 = sub.iloc[-6:-1]  # 前5根K线
+
+    low_break_lower = (prev5["low"] < prev5["lower"]).any()
+
+    cond_two_bull = (
+            k1["is_bull"] and
+            k2["is_bull"]
+    )
+
+    cond_above_lower = (
+            k1["low"] > k1["lower"] and
+            k2["low"] > k2["lower"]
+    )
+
+    if cond_two_bull and cond_above_lower and low_break_lower:
+
+        name = "信号5 看多 下轨反弹 🔥🔥🔥"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ====================
+    # 信号6 看空 上轨回落
+    # ====================
+
+    prev5 = sub.iloc[-6:-1]  # 前5根K线
+
+    high_break_upper = (prev5["high"] > prev5["upper"]).any()
+
+    cond_two_bear = (
+            k1["is_bear"] and
+            k2["is_bear"]
+    )
+
+    cond_below_upper = (
+            k1["high"] < k1["upper"] and
+            k2["high"] < k2["upper"]
+    )
+
+    if cond_two_bear and cond_below_upper and high_break_upper:
+
+        name = "信号6 看空 上轨回落 ❄️❄️❄️"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
     return signals
 
 
