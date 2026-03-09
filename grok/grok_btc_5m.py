@@ -112,14 +112,14 @@ def detect_signals(sub):
     avg_vol = prev3["vol"].mean()
 
     vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
-    if vol_ratio>4:
+    if vol_ratio > 4:
         match vol_ratio:
             case x if x >= 7.3:
-                name = f"信号1 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
+                name = f"信号1 观察 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
             case x if x >= 5.7:
-                name = f"信号1 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
+                name = f"信号1 观察 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
             case x if x >= 3.2:
-                name = f"信号1 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
+                name = f"信号1 观察 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
 
         if allow_signal(name, now_ts):
             signals.append(name)
@@ -135,7 +135,58 @@ def detect_signals(sub):
 
     if cond_break_upper:
 
-        name = "信号2 突破布林上轨 🚀🚀🚀"
+        name = "信号2 观察 突破布林上轨 🚀🚀🚀"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ====================
+    # 信号3 看多 中轨突破
+    # ====================
+
+    prev8 = sub.iloc[-9:-1]  # 最近8根K线(不含当前)
+
+    cond_cross_mid_bull = (
+            k2["is_bull"] and
+            k1["change_pct"] >= 0.06 and
+            k2["open"] <= k2["mid"] and
+            k2["close"] > k2["mid"]
+    )
+
+    # 前6根不能出现
+    first_cross = True
+    for _, r in prev8.iloc[:-1].iterrows():
+        if r["is_bull"] and r["open"] <= r["mid"] and r["close"] > r["mid"]:
+            first_cross = False
+            break
+
+    if k1["is_bull"] and cond_cross_mid_bull and first_cross:
+
+        name = "信号3 看多 中轨突破 📈📈"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
+
+    # ====================
+    # 信号4 看空 中轨跌破
+    # ====================
+
+    cond_cross_mid_bear = (
+            k2["is_bear"] and
+            abs(k1["change_pct"]) >= 0.06 and
+            k2["open"] >= k2["mid"] and
+            k2["close"] < k2["mid"]
+    )
+
+    first_cross = True
+    for _, r in prev8.iloc[:-1].iterrows():
+        if r["is_bear"] and r["open"] >= r["mid"] and r["close"] < r["mid"]:
+            first_cross = False
+            break
+
+    if k1["is_bear"] and cond_cross_mid_bear and first_cross:
+
+        name = "信号4 看空 中轨跌破 📉📉"
 
         if allow_signal(name, now_ts):
             signals.append(name)
