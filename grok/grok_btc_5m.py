@@ -19,7 +19,9 @@ last_signal_time = {}
 CHAT_ID = "-5264477303"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_5m_new_signal.txt"
+LOG_FILE = "btc_5m_signal.txt"
+INST_ID = "BTC-USDT-SWAP"
+BAR = "5m"
 
 
 # ==================== Telegram ====================
@@ -35,13 +37,13 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT-SWAP", bar="5m", limit=1000):
+def get_candles():
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
-        "instId": instId,
-        "bar": bar,
-        "limit": limit
+        "instId": INST_ID,
+        "bar": BAR,
+        "limit": 1000
     }, timeout=10)
 
     data = r.json()["data"]
@@ -115,11 +117,11 @@ def detect_signals(sub):
     if vol_ratio > 4:
         match vol_ratio:
             case x if x >= 7.3:
-                name = f"信号1 观察 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
+                name = f"信号1 爆量 屌爆了啊 🧨🧨🧨 {x:.2f}倍 🧨🧨🧨"
             case x if x >= 5.7:
-                name = f"信号1 观察 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
+                name = f"信号1 爆量 超级爆量 💢💢💢 {x:.2f}倍 💢💢💢"
             case x if x >= 3.2:
-                name = f"信号1 观察 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
+                name = f"信号1 爆量 一般爆量 🟡🟡🟡 {x:.2f}倍 🟡🟡🟡"
 
         if allow_signal(name, now_ts):
             signals.append(name)

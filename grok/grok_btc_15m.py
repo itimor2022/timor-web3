@@ -19,7 +19,9 @@ last_signal_time = {}
 CHAT_ID = "-5068436114"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_15m_new_signal.txt"
+LOG_FILE = "btc_15m_signal.txt"
+INST_ID = "BTC-USDT-SWAP"
+BAR = "15m"
 
 
 # ==================== Telegram ====================
@@ -35,13 +37,13 @@ def send_message(msg):
 
 
 # ==================== 获取K线 ====================
-def get_candles(instId="BTC-USDT-SWAP", bar="15m", limit=1000):
+def get_candles():
     url = "https://www.okx.com/api/v5/market/candles"
 
     r = requests.get(url, params={
-        "instId": instId,
-        "bar": bar,
-        "limit": limit
+        "instId": INST_ID,
+        "bar": BAR,
+        "limit": 1000
     }, timeout=10)
 
     data = r.json()["data"]

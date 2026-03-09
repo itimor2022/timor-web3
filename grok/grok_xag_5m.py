@@ -1,27 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-BTC 4小时 布林信号策略
+白银 XAG 永续 5分钟 布林信号策略
 """
 
 import requests
 import pandas as pd
 from datetime import timedelta
 
-# 设置显示参数
 pd.set_option('display.max_columns', 1000)
-pd.set_option('display.max_rows', 1000)
-pd.set_option('display.width', 1000)
-pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=480)
+SIGNAL_COOLDOWN = timedelta(minutes=60)
 last_signal_time = {}
 
-CHAT_ID = "-4836241115"
+CHAT_ID = "-4850300375"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_4h_signal.txt"
-INST_ID = "BTC-USDT-SWAP"
-BAR = "4H"
+LOG_FILE = "xag_5m_signal.txt"
+INST_ID = "XAG-USDT-SWAP"
+BAR = "5m"
 
 
 # ==================== Telegram ====================
@@ -63,18 +59,23 @@ def get_candles():
     return df[["ts", "open", "high", "low", "close", "vol"]]
 
 
-# ==================== 布林指标 ====================
+# ==================== 指标 ====================
 def add_indicators(df):
     df["mid"] = df["close"].rolling(20).mean()
     df["std"] = df["close"].rolling(20).std()
+
     df["upper"] = df["mid"] + 2 * df["std"]
     df["lower"] = df["mid"] - 2 * df["std"]
 
     df["is_bull"] = df["close"] > df["open"]
     df["is_bear"] = df["close"] < df["open"]
+
     df["mid_price"] = (df["close"] + df["open"]) / 2
-    # 涨幅
+
     df["change_pct"] = (df["close"] - df["open"]) / df["open"] * 100
+
+    df["body"] = (df["close"] - df["open"]).abs()
+
     return df
 
 
@@ -93,52 +94,57 @@ def allow_signal(name, ts):
     return False
 
 
+# ==================== 信号检测 ====================
 def detect_signals(sub):
-    if len(sub) < 25:
+    if len(sub) < 10:
         return []
 
     signals = []
 
     k1 = sub.iloc[-1]
-    k2 = sub.iloc[-2]
-
-    prev_body = abs(k2["close"] - k2["open"])
-    now_body = abs(k1["close"] - k1["open"])
+    prev3 = sub.iloc[-4:-1]
 
     now_ts = k1["ts"]
 
-    # ===============================
-    # 信号1：看空 关键阳线转弱
-    # ===============================
-    if k1["is_bear"] and k1["mid_price"] < k2["mid_price"]:
-        # 向前找最近阳线（允许上一根）
-        target_bull = None
-        # name = "信号1 看空 关键阳线转弱"
-        #
-        # if allow_signal(name, now_ts):
-        #     signals.append(name)
+    # ====================
+    # 信号1 爆量
+    # ====================
 
-        for i in range(len(sub) - 2, -1, -1):
-            k = sub.iloc[i]
+    avg_vol = prev3["vol"].mean()
 
-            if k["is_bull"]:
-                target_bull = k
-                bull_index = i
-                break
+    vol_ratio = k1["vol"] / avg_vol if avg_vol > 0 else 0
 
-        if target_bull is not None:
+    if vol_ratio > 6:
+        if vol_ratio >= 17.3:
+            name = f"信号1 爆量 屌爆了啊 🧨🧨🧨 {vol_ratio:.2f}倍"
+        elif vol_ratio >= 9.2:
+            name = f"信号1 爆量 超级爆量 💢💢💢 {vol_ratio:.2f}倍"
+        else:
+            name = f"信号1 爆量 一般爆量 🟡🟡🟡 {vol_ratio:.2f}倍"
 
-            # 条件2：该阳线是前10K最高收盘价
-            if bull_index >= 6:
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
-                prev10 = sub.iloc[bull_index - 6:bull_index]
+    # ====================
+    # 信号2 暴涨实体
+    # ====================
+    body_prev3 = sub.iloc[-11:-1]
 
-                if target_bull["close"] >= prev10["close"].max():
+    avg_body = body_prev3["body"].mean() + 0.000001
 
-                    name = "信号1 看空 关键阳线转弱"
+    body_ratio = k1["body"] / avg_body if avg_body > 0 else 0
 
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
+    if body_ratio >= 4:
+
+        if body_ratio >= 15:
+            name = f"信号2 暴涨 炸裂 🚀🚀🚀 {body_ratio:.2f}倍"
+        elif body_ratio >= 10:
+            name = f"信号2 暴涨 超级 💥💥💥 {body_ratio:.2f}倍"
+        else:
+            name = f"信号2 暴涨 一般 🔥🔥🔥 {body_ratio:.2f}倍"
+
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
     return signals
 
@@ -146,21 +152,29 @@ def detect_signals(sub):
 # ==================== 历史扫描 ====================
 def scan_history(df):
     print("开始历史扫描...")
+
     total = 0
+
     open(LOG_FILE, "w").close()
 
     for i in range(30, len(df)):
+
         sub = df.iloc[:i + 1]
+
         sigs = detect_signals(sub)
 
         if sigs:
+
             k = sub.iloc[-1]
-            ts1 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
+
+            ts1 = (k["ts"] - timedelta(minutes=5)).strftime("%m-%d %H:%M")
             ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-            text = f"{ts1} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
+            text = f"{ts1} ~ {ts2} | XAG白银 {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}%\n"
+
             for s in sigs:
                 text += f" - {s}\n"
+
             text += "-" * 30 + "\n"
 
             with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -173,25 +187,28 @@ def scan_history(df):
 
 # ==================== 实时检测 ====================
 def check_k_now(df):
-    sub = df.iloc[:-1]  # 用于检测
+    sub = df.iloc[:-1]
+
     sigs = detect_signals(sub)
 
     if not sigs:
         print("最新K线无信号")
         return
 
-    k = df.iloc[-1]  # 取最后一根K线（单行）
-    ts1 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
+    k = sub.iloc[-1]
+
+    ts1 = (k["ts"] - timedelta(minutes=5)).strftime("%m-%d %H:%M")
     ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "🚨 BTC 4H 新信号触发\n"
-    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
-    msg += f"💰 价格: {k['close']:,.2f}\n"
-    msg += f"📊 成交量: {k['vol']:,.2f}\n"
-    msg += f"📉 涨幅: {k['change_pct']:,.2f}%\n\n"
+    msg = "🚨 XAG白银 永续 5m 新信号\n"
+
+    msg += f"⏰ {ts1} ~ {ts2}\n"
+    msg += f"💰 价格 {k['close']:,.2f}\n"
+    msg += f"📊 成交量 {k['vol']:,.2f}\n"
+    msg += f"📉 涨幅 {k['change_pct']:,.2f}%\n\n"
 
     for s in sigs:
-        msg += f"🔴 {s} \n"
+        msg += f"🔴 {s}\n"
 
     send_message(msg)
 
@@ -203,12 +220,15 @@ def check_k_now(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 4H 新策略启动")
+    print("XAG白银 永续 5m 策略启动")
 
     df = get_candles()
+
     df = add_indicators(df)
-    scan_history(df)
+
     check_k_now(df)
+
+    scan_history(df)
 
 
 if __name__ == "__main__":
