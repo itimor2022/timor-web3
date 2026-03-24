@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 15分钟 布林信号策略
+BTC 30分钟 布林信号策略
 """
 
 import requests
@@ -19,9 +19,9 @@ last_signal_time = {}
 CHAT_ID = "-506843611"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_15m_signal.txt"
+LOG_FILE = "btc_30m_signal.txt"
 INST_ID = "BTC-USDT-SWAP"
-BAR = "15m"
+BAR = "30m"
 
 
 # ==================== Telegram ====================
@@ -108,45 +108,87 @@ def detect_signals(sub):
 
     now_ts = k1["ts"]
 
-    # 当前必须是阴线
-    if k1["close"] >= k1["open"]:
-        return []
+    # 实体下穿中轨（开盘在上，收盘在下）
+    cond_cross_mid_down = (
+            (k1["open"] > k1["mid"]) &
+            (k1["close"] < k1["mid"])
+    )
+    cond_cross_mid_up = (
+            (k1["open"] < k1["mid"]) &
+            (k1["close"] > k1["mid"])
+    )
 
-    # =========================
-    # 单根跌幅
-    # =========================
-    single_drop = (k1["open"] - k1["close"]) / k1["open"] * 100
+    if k1['is_bear'] and cond_cross_mid_down:
+        # =========================
+        # 单根跌幅
+        # =========================
+        single_drop = (k1["open"] - k1["close"]) / k1["open"] * 100
 
-    if single_drop > 0.31:
-        name = f"信号1 看空 单根暴跌 {single_drop:.2f}%"
-        if allow_signal(name, now_ts):
-            signals.append(name)
-
-    # =========================
-    # 连续阴线累计跌幅
-    # =========================
-    consecutive = []
-
-    for i in range(len(sub) - 1, -1, -1):
-        k = sub.iloc[i]
-        if k["close"] < k["open"]:
-            consecutive.append(k)
-        else:
-            break
-
-    if len(consecutive) >= 2:
-        consecutive = consecutive[::-1]
-
-        first_k = consecutive[0]
-        last_k = consecutive[-1]
-
-        total_drop = (first_k["open"] - last_k["close"]) / first_k["open"]
-
-        if total_drop > 0.43:
-            name = f"信号1 看空 连续{len(consecutive)}阴 累计跌幅{total_drop:.2f}%"
+        if single_drop > 0.31:
+            name = f"信号1 看空 单根暴跌 {single_drop:.2f}%"
             if allow_signal(name, now_ts):
                 signals.append(name)
 
+        # =========================
+        # 连续累计跌幅
+        # =========================
+        consecutive = []
+
+        for i in range(len(sub) - 1, -1, -1):
+            k = sub.iloc[i]
+            if k["close"] < k["open"]:
+                consecutive.append(k)
+            else:
+                break
+
+        if len(consecutive) >= 2:
+            consecutive = consecutive[::-1]
+
+            first_k = consecutive[0]
+            last_k = consecutive[-1]
+
+            total_drop = (first_k["open"] / last_k["close"] - 1) * 100
+
+            if total_drop > 0.33:
+                name = f"信号1 看空 连续{len(consecutive)}阴 累计跌幅{total_drop:.2f}%"
+                if allow_signal(name, now_ts):
+                    signals.append(name)
+
+    if k1['is_bull'] and cond_cross_mid_up:
+        # =========================
+        # 单根跌幅
+        # =========================
+        single_drop = (k1["close"] / k1["open"] - 1) * 100
+
+        if single_drop > 0.31:
+            name = f"信号2 看多 单根暴涨 {single_drop:.2f}%"
+            if allow_signal(name, now_ts):
+                signals.append(name)
+
+        # =========================
+        # 连续累计跌幅
+        # =========================
+        consecutive = []
+
+        for i in range(len(sub) - 1, -1, -1):
+            k = sub.iloc[i]
+            if k["close"] > k["open"]:
+                consecutive.append(k)
+            else:
+                break
+
+        if len(consecutive) >= 2:
+            consecutive = consecutive[::-1]
+
+            first_k = consecutive[0]
+            last_k = consecutive[-1]
+
+            total_drop = (first_k["close"] / last_k["open"] - 1) * 100
+
+            if total_drop > 0.33:
+                name = f"信号2 看多 连续{len(consecutive)}阳 累计涨幅{total_drop:.2f}%"
+                if allow_signal(name, now_ts):
+                    signals.append(name)
     return signals
 
 
