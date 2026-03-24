@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-BTC 4小时 布林信号策略
+BTC 15分钟 布林信号策略
 """
 
 import requests
@@ -13,18 +13,18 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_colwidth', 1000)
 
-SIGNAL_COOLDOWN = timedelta(minutes=480)
+SIGNAL_COOLDOWN = timedelta(minutes=30)
 last_signal_time = {}
-恶趣
-CHAT_ID = "-4836241115"
+
+CHAT_ID = "-506843611"
 TOKEN = "8444348700:AAGqkeUUuB_0rI_4qIaJxrTylpRGh020wU0"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-LOG_FILE = "btc_4h_signal.txt"
+LOG_FILE = "btc_15m_signal.txt"
 INST_ID = "BTC-USDT-SWAP"
-BAR = "4H"
+BAR = "15m"
 
 
-# ========大萨达============ Telegram ====================
+# ==================== Telegram ====================
 def send_message(msg):
     try:
         requests.get(
@@ -93,52 +93,59 @@ def allow_signal(name, ts):
     return False
 
 
+# ==================== 信号检测 ====================
 def detect_signals(sub):
-    if len(sub) < 25:
+    # print(sub)
+    if len(sub) < 40:
+        return []
+
+    if "vol" not in sub.columns:
         return []
 
     signals = []
 
     k1 = sub.iloc[-1]
-    k2 = sub.iloc[-2]
-
-    prev_body = abs(k2["close"] - k2["open"])
-    now_body = abs(k1["close"] - k1["open"])
 
     now_ts = k1["ts"]
 
-    # ===============================
-    # 信号1：看空 关键阳线转弱
-    # ===============================
-    if k1["is_bear"] and k1["mid_price"] < k2["mid_price"]:
-        # 向前找最近阳线（允许上一根）
-        target_bull = None
-        # name = "信号1 看空 关键阳线转弱"
-        #
-        # if allow_signal(name, now_ts):
-        #     signals.append(name)
+    # 当前必须是阴线
+    if k1["close"] >= k1["open"]:
+        return []
 
-        for i in range(len(sub) - 2, -1, -1):
-            k = sub.iloc[i]
+    # =========================
+    # 单根跌幅
+    # =========================
+    single_drop = (k1["open"] - k1["close"]) / k1["open"] * 100
 
-            if k["is_bull"]:
-                target_bull = k
-                bull_index = i
-                break
+    if single_drop > 0.31:
+        name = f"信号1 看空 单根暴跌 {single_drop:.2f}%"
+        if allow_signal(name, now_ts):
+            signals.append(name)
 
-        if target_bull is not None:
+    # =========================
+    # 连续阴线累计跌幅
+    # =========================
+    consecutive = []
 
-            # 条件2：该阳线是前10K最高收盘价
-            if bull_index >= 6:
+    for i in range(len(sub) - 1, -1, -1):
+        k = sub.iloc[i]
+        if k["close"] < k["open"]:
+            consecutive.append(k)
+        else:
+            break
 
-                prev10 = sub.iloc[bull_index - 6:bull_index]
+    if len(consecutive) >= 2:
+        consecutive = consecutive[::-1]
 
-                if target_bull["close"] >= prev10["close"].max():
+        first_k = consecutive[0]
+        last_k = consecutive[-1]
 
-                    name = "信号1 看空 关键阳线转弱"
+        total_drop = (first_k["open"] - last_k["close"]) / first_k["open"]
 
-                    if allow_signal(name, now_ts):
-                        signals.append(name)
+        if total_drop > 0.43:
+            name = f"信号1 看空 连续{len(consecutive)}阴 累计跌幅{total_drop:.2f}%"
+            if allow_signal(name, now_ts):
+                signals.append(name)
 
     return signals
 
@@ -155,10 +162,11 @@ def scan_history(df):
 
         if sigs:
             k = sub.iloc[-1]
-            ts1 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
+            ts1 = (k["ts"] - timedelta(minutes=15)).strftime("%m-%d %H:%M")
             ts2 = k["ts"].strftime("%m-%d %H:%M")
 
             text = f"{ts1} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
+
             for s in sigs:
                 text += f" - {s}\n"
             text += "-" * 30 + "\n"
@@ -172,7 +180,7 @@ def scan_history(df):
 
 
 # ==================== 实时检测 ====================
-def check_k_now(df):
+def check_latest(df):
     sub = df.iloc[:-1]  # 用于检测
     sigs = detect_signals(sub)
 
@@ -181,10 +189,10 @@ def check_k_now(df):
         return
 
     k = df.iloc[-1]  # 取最后一根K线（单行）
-    ts1 = (k["ts"] - timedelta(hours=4)).strftime("%m-%d %H:%M")
+    ts1 = (k["ts"] - timedelta(minutes=15)).strftime("%m-%d %H:%M")
     ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "🚨 BTC 4H 新信号触发\n"
+    msg = "🚨 BTC 15m 新信号触发\n"
     msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
     msg += f"💰 价格: {k['close']:,.2f}\n"
     msg += f"📊 成交量: {k['vol']:,.2f}\n"
@@ -203,12 +211,12 @@ def check_k_now(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 4H 新策略启动")
+    print("BTC 15M 新策略启动")
 
     df = get_candles()
     df = add_indicators(df)
+    check_latest(df)
     scan_history(df)
-    check_k_now(df)
 
 
 if __name__ == "__main__":
