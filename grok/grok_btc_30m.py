@@ -204,7 +204,7 @@ def scan_history(df):
 
         if sigs:
             k = sub.iloc[-1]
-            ts1 = (k["ts"] - timedelta(minutes=15)).strftime("%m-%d %H:%M")
+            ts1 = (k["ts"] - timedelta(minutes=30)).strftime("%m-%d %H:%M")
             ts2 = k["ts"].strftime("%m-%d %H:%M")
 
             text = f"{ts1} ~ {ts2} | BTC {k['close']:,.2f} | {k['vol']:,.2f} | {k['change_pct']:,.2f}% \n"
@@ -231,10 +231,10 @@ def check_latest(df):
         return
 
     k = df.iloc[-1]  # 取最后一根K线（单行）
-    ts1 = (k["ts"] - timedelta(minutes=15)).strftime("%m-%d %H:%M")
+    ts1 = (k["ts"] - timedelta(minutes=30)).strftime("%m-%d %H:%M")
     ts2 = k["ts"].strftime("%m-%d %H:%M")
 
-    msg = "🚨 BTC 15m 新信号触发\n"
+    msg = "🚨 BTC 30m 新信号触发\n"
     msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
     msg += f"💰 价格: {k['close']:,.2f}\n"
     msg += f"📊 成交量: {k['vol']:,.2f}\n"
@@ -253,7 +253,7 @@ def check_latest(df):
 
 # ==================== 主程序 ====================
 def main():
-    print("BTC 15M 新策略启动")
+    print("BTC 30M 新策略启动")
 
     df = get_candles()
     df = add_indicators(df)
