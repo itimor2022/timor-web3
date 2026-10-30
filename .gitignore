@@ -4,4 +4,4 @@
 *.txt
 *.csv
 .vscode/
-grok/*.txt
+.env

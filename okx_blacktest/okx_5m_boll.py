@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OKX 5m MACD + 事件倍投回测（改进版）
+OKX 5m布林线 + 事件倍投回测（改进版）
 默认模拟规则：
 - 使用 OKX 公共现货 OHLCV 数据，不需要 API Key
-- MACD：快线6，慢线13，信号线5（可用 --fast / --slow / --signal 调整）
-- 已收盘信号K线 MACD 柱（DIF-DEA）> 0 -> LONG；< 0 -> SHORT
-  （也可用 DIF 上穿/下穿 DEA 作为方向，这里采用柱状能量方向）
+- 布林线：20周期，2倍标准差（可用 --period / --std 调整）
+- 【方向判断】只有信号K线实体"完整站在中轨一侧"才投注：
+    实体完全在中轨上方 -> LONG
+    实体完全在中轨下方 -> SHORT
+    实体跨过/贴住中轨（上穿或下穿那根）-> 跳过，不投注
+- 【可选】--cooldown-after-cross N：穿线那根之后再跳过 N 根K线，
+  等价格真正站稳一侧才参与（默认 0，即穿线那根跳过、下一根即可参与）
 - 下一根K线模拟事件结算：close > open 为上涨，close < open 为下跌
 - 平局默认不输不赢（净盈亏 0，仅扣手续费），倍投状态不变
-- 投注序列：1、3、7、15、31（默认 max-losses=5），第5次连亏后下一轮恢复基础投入
+- 投注序列：1、3、7、15、31（按 max-losses 决定），连亏达到阈值后下一轮恢复基础投入
 - 默认单日柬埔寨时区日期，可通过 --date 指定
 输出：
 - 每次投注记录 CSV（含真实连亏/连赢计数）
-- 汇总 TXT（含最大单注、真实最大连亏/连赢、过滤统计）
+- 汇总 TXT（含最大单注、真实最大连亏/连赢、穿线跳过统计）
 注意：这是对普通K线涨跌的代理模拟，不代表 OKX 特定预测产品的真实赔率/结算规则。
 """
 
@@ -36,23 +40,26 @@ except ImportError:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="OKX 5m MACD 倍投单日回测（改进版）")
+    p = argparse.ArgumentParser(description="OKX 5m布林倍投单日回测（改进版）")
     p.add_argument("--date",
                    default=(datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d"),
                    help="回测日期，柬埔寨时间，格式 YYYY-MM-DD；默认昨天")
     p.add_argument("--symbol", default="BTC/USDT", help="交易对，默认 BTC/USDT")
-    p.add_argument("--fast", type=int, default=6, help="MACD 快线周期，默认 6")
-    p.add_argument("--slow", type=int, default=13, help="MACD 慢线周期，默认 13")
-    p.add_argument("--signal", type=int, default=5, help="MACD 信号线周期，默认 5")
+    p.add_argument("--period", type=int, default=20, help="布林线周期，默认 20")
+    p.add_argument("--std", type=float, default=2.0, help="布林线标准差倍数，默认 2.0")
     p.add_argument("--base", type=float, default=10.0, help="基础投注金额，默认 10 USDT")
     p.add_argument("--max-losses", type=int, default=10,
-                   help="连续亏损达到该次数后下一轮重置，默认 10（对应序列 1,3,7,15,31）")
+                   help="连续亏损达到该次数后下一轮重置，默认 10")
     p.add_argument("--payout", type=float, default=1.0,
                    help="获胜净利润倍率：投注1，赢时净赚 payout 倍投注；默认1.0（等额赔率净利润）")
     p.add_argument("--outdir", default="backtest_output", help="输出目录")
     p.add_argument("--fee", type=float, default=0.0,
-                   help="每次投注按投注额比例扣除的费用，例如 0.01 表示 1%%".replace("%%", "%"))
+                   help="每次投注按投注额比例扣除的费用，例如 0.01 表示 1%")
 
+    # === 新增：穿线后冷静期 ===
+    p.add_argument("--cooldown-after-cross", type=int, default=0,
+                   help="穿线K线之后再额外跳过 N 根K线（等站稳再参与）；默认 0。"
+                        "注意：穿线那根本身永远会被跳过")
     return p.parse_args()
 
 
@@ -65,7 +72,7 @@ def validate_date(s):
 
 
 def fetch_day(exchange, symbol, start_ms, end_ms):
-    """分页获取日期范围内的5mK线，额外向前取数据用于 MACD 预热。"""
+    """分页获取日期范围内的5mK线，额外向前取数据用于布林线预热。"""
     timeframe_ms = 5 * 60 * 1000
     since = start_ms - 200 * timeframe_ms
     rows = []
@@ -111,27 +118,32 @@ def money(x):
 
 def run_backtest(df, args, day_start_ms, day_end_ms):
     df = df.copy()
-
-    # ---- MACD 计算（快线6 慢线13 信号5）----
-    # EMA 用标准 pandas ewm(span=..., adjust=False)
-    ema_fast = df["close"].ewm(span=args.fast, adjust=False).mean()
-    ema_slow = df["close"].ewm(span=args.slow, adjust=False).mean()
-    df["macd_dif"] = ema_fast - ema_slow
-    df["macd_dea"] = df["macd_dif"].ewm(span=args.signal, adjust=False).mean()
-    df["macd_hist"] = df["macd_dif"] - df["macd_dea"]  # MACD 柱（能量）
+    df["middle"] = df["close"].rolling(args.period).mean()
+    df["std"] = df["close"].rolling(args.period).std(ddof=0)
+    df["upper"] = df["middle"] + args.std * df["std"]
+    df["lower"] = df["middle"] - args.std * df["std"]
+    df["middle_prev"] = df["middle"].shift(1)
 
     rows = []
     stake = args.base
     consecutive_losses = 0
     consecutive_wins = 0
-    max_loss_streak = 0          # 真实最大连亏（不因重置而清零）
-    max_win_streak = 0           # 真实最大连赢
-    max_single_stake = 0.0       # 最大单次投注额
+    max_loss_streak = 0
+    max_win_streak = 0
+    max_single_stake = 0.0
     total_staked = 0.0
     total_pnl = 0.0
     total_fee = 0.0
     wins = losses = pushes = 0
     bet_no = 0
+
+    # 统计：穿线跳过的K线数、冷静期跳过的K线数、指标未预热跳过数
+    crossed_skipped = 0
+    cooldown_skipped = 0
+    skipped_na = 0
+
+    # 冷静期剩余计数
+    cooldown_left = 0
 
     for i in range(0, len(df) - 1):
         signal_candle = df.iloc[i]
@@ -140,18 +152,39 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
 
         if signal_ts < day_start_ms or signal_ts >= day_end_ms:
             continue
-        # MACD 预热不足则跳过
-        if pd.isna(signal_candle["macd_dif"]) or pd.isna(signal_candle["macd_dea"]) or pd.isna(signal_candle["macd_hist"]):
+        if pd.isna(signal_candle["middle"]) or pd.isna(signal_candle["middle_prev"]):
+            skipped_na += 1
             continue
 
-        # ---- 1) 原始方向判断（MACD 柱方向）----
-        macd_hist = float(signal_candle["macd_hist"])
-        if macd_hist > 0:
+        body_low = min(float(signal_candle["open"]), float(signal_candle["close"]))
+        body_high = max(float(signal_candle["open"]), float(signal_candle["close"]))
+        middle = float(signal_candle["middle"])
+        middle_prev = float(signal_candle["middle_prev"])
+
+        # 判断实体与中轨的关系
+        is_above = body_low > middle            # 实体完全在中轨上方
+        is_below = body_high < middle           # 实体完全在中轨下方
+        is_cross = not is_above and not is_below  # 实体跨过/贴住中轨（穿线那根）
+
+        # 1) 穿线那根：永远跳过，不投注，并重置冷静期
+        if is_cross:
+            crossed_skipped += 1
+            cooldown_left = args.cooldown_after_cross
+            continue
+
+        # 2) 冷静期：穿线后额外跳过的K线
+        if cooldown_left > 0:
+            cooldown_skipped += 1
+            cooldown_left -= 1
+            continue
+
+        # 3) 到这里，实体完整在中轨一侧，可以定方向
+        if is_above:
             raw_signal = "LONG"
-        elif macd_hist < 0:
+        elif is_below:
             raw_signal = "SHORT"
         else:
-            continue  # 柱为 0 跳过
+            continue  # 理论上不会到这里
 
         signal = raw_signal
 
@@ -221,9 +254,10 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             "signal": signal,
             "signal_open": money(signal_candle["open"]),
             "signal_close": money(signal_candle["close"]),
-            "macd_dif": money(signal_candle["macd_dif"]),
-            "macd_dea": money(signal_candle["macd_dea"]),
-            "macd_hist": money(signal_candle["macd_hist"]),
+            "boll_middle": money(middle),
+            "boll_middle_prev": money(middle_prev),
+            "boll_upper": money(signal_candle["upper"]) if pd.notna(signal_candle["upper"]) else "",
+            "boll_lower": money(signal_candle["lower"]) if pd.notna(signal_candle["lower"]) else "",
             "settle_open": money(next_open),
             "settle_close": money(next_close),
             "event_outcome": outcome,
@@ -242,13 +276,13 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
     summary = {
         "date_local": datetime.fromtimestamp(day_start_ms / 1000, LOCAL_TZ).strftime("%Y-%m-%d"),
         "symbol": args.symbol,
-        "macd_fast": args.fast,
-        "macd_slow": args.slow,
-        "macd_signal": args.signal,
+        "period": args.period,
+        "std_multiplier": args.std,
         "base_stake": args.base,
         "max_consecutive_losses_param": args.max_losses,
         "payout_net_multiplier": args.payout,
         "fee_rate": args.fee,
+        "cooldown_after_cross": args.cooldown_after_cross,
         "bets": len(rows),
         "wins": wins,
         "losses": losses,
@@ -261,15 +295,19 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         "actual_max_consecutive_losses": max_loss_streak,
         "actual_max_consecutive_wins": max_win_streak,
         "ending_next_stake": money(stake),
+        "crossed_candles_skipped": crossed_skipped,
+        "cooldown_candles_skipped": cooldown_skipped,
+        "skipped_indicator_nan": skipped_na,
     }
     return rows, summary
 
 
 def main():
     args = parse_args()
-    if args.fast < 1 or args.slow < 1 or args.signal < 1 or args.fast >= args.slow \
-            or args.base <= 0 or args.max_losses < 1 or args.payout < 0 or args.fee < 0:
-        raise SystemExit("参数无效：fast>=1、slow>=1、signal>=1、fast<slow、base>0、max-losses>=1、payout>=0、fee>=0")
+    if args.period < 2 or args.base <= 0 or args.max_losses < 1 or args.payout < 0 or args.fee < 0:
+        raise SystemExit("参数无效：period>=2、base>0、max-losses>=1、payout>=0、fee>=0")
+    if args.cooldown_after_cross < 0:
+        raise SystemExit("--cooldown-after-cross 必须 >= 0")
 
     day = validate_date(args.date)
     day_start_ms = int(day.timestamp() * 1000)
@@ -283,7 +321,7 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     safe_symbol = args.symbol.replace("/", "_").replace(":", "_")
-    stem = f"5m_macd_{safe_symbol}_{args.date}"
+    stem = f"5m_boll_{safe_symbol}_{args.date}"
 
     csv_path = outdir / f"{stem}.csv"
     txt_path = outdir / f"{stem}.txt"
@@ -301,13 +339,13 @@ def main():
     summary_cn = {
         "回测日期": summary["date_local"],
         "交易对": summary["symbol"],
-        "MACD 快线周期": summary["macd_fast"],
-        "MACD 慢线周期": summary["macd_slow"],
-        "MACD 信号线周期": summary["macd_signal"],
+        "布林线周期": summary["period"],
+        "标准差倍数": summary["std_multiplier"],
         "基础投注金额（USDT）": summary["base_stake"],
         "连亏重置阈值（参数）": summary["max_consecutive_losses_param"],
         "中奖净利润倍数": summary["payout_net_multiplier"],
         "手续费率": summary["fee_rate"],
+        "穿线后冷静期（根）": summary["cooldown_after_cross"],
         "总投注次数": summary["bets"],
         "盈利次数": summary["wins"],
         "亏损次数": summary["losses"],
@@ -320,10 +358,13 @@ def main():
         "实际最大连续亏损次数": summary["actual_max_consecutive_losses"],
         "实际最大连续盈利次数": summary["actual_max_consecutive_wins"],
         "下一轮投注金额（USDT）": summary["ending_next_stake"],
+        "穿线K线跳过数": summary["crossed_candles_skipped"],
+        "冷静期跳过K线数": summary["cooldown_candles_skipped"],
+        "指标预热期跳过数": summary["skipped_indicator_nan"],
     }
 
     with txt_path.open("w", encoding="utf-8-sig") as f:
-        f.write("OKX 5m MACD 倍投回测汇总（改进版）\n")
+        f.write("OKX 5m布林倍投回测汇总（改进版）\n")
         f.write("=" * 44 + "\n")
         for key, value in summary_cn.items():
             f.write(f"{key}：{value}\n")
