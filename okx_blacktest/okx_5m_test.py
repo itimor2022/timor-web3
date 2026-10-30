@@ -11,9 +11,6 @@ OKX 5m布林线 + 事件倍投回测（改进版）
     实体跨过/贴住中轨（上穿或下穿那根）-> 跳过，不投注
 - 【可选】--cooldown-after-cross N：穿线那根之后再跳过 N 根K线，
   等价格真正站稳一侧才参与（默认 0，即穿线那根跳过、下一根即可参与）
-- 【可选过滤器】RSI / ADX（参数开关控制）
-    RSI：LONG 要求 RSI >= rsi_long_th，SHORT 要求 RSI <= rsi_short_th
-    ADX：仅在 ADX >= adx_threshold 时才允许投注（过滤横盘）
 - 下一根K线模拟事件结算：close > open 为上涨，close < open 为下跌
 - 平局默认不输不赢（净盈亏 0，仅扣手续费），倍投状态不变
 - 投注序列：1、3、7、15、31（按 max-losses 决定），连亏达到阈值后下一轮恢复基础投入
@@ -37,50 +34,32 @@ LOCAL_TZ = ZoneInfo("Asia/Phnom_Penh")
 try:
     import ccxt
     import pandas as pd
-    import numpy as np
 except ImportError:
-    print("缺少依赖，请先执行：pip install ccxt pandas numpy", file=sys.stderr)
+    print("缺少依赖，请先执行：pip install ccxt pandas", file=sys.stderr)
     raise
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="OKX 5m布林倍投单日回测（改进版 + RSI/ADX 过滤）")
+    p = argparse.ArgumentParser(description="OKX 5m布林倍投单日回测（改进版）")
     p.add_argument("--date",
                    default=(datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d"),
                    help="回测日期，柬埔寨时间，格式 YYYY-MM-DD；默认昨天")
     p.add_argument("--symbol", default="BTC/USDT", help="交易对，默认 BTC/USDT")
     p.add_argument("--period", type=int, default=20, help="布林线周期，默认 20")
     p.add_argument("--std", type=float, default=2.0, help="布林线标准差倍数，默认 2.0")
-    p.add_argument("--base", type=float, default=20.0, help="基础投注金额，默认 10 USDT")
+    p.add_argument("--base", type=float, default=10.0, help="基础投注金额，默认 10 USDT")
     p.add_argument("--max-losses", type=int, default=10,
                    help="连续亏损达到该次数后下一轮重置，默认 10")
     p.add_argument("--payout", type=float, default=1.0,
                    help="获胜净利润倍率：投注1，赢时净赚 payout 倍投注；默认1.0（等额赔率净利润）")
     p.add_argument("--outdir", default="backtest_output", help="输出目录")
-    p.add_argument("--fee", type=float, default=0.022,
+    p.add_argument("--fee", type=float, default=0.0,
                    help="每次投注按投注额比例扣除的费用，例如 0.01 表示 1%")
 
-    # === 穿线后冷静期 ===
+    # === 新增：穿线后冷静期 ===
     p.add_argument("--cooldown-after-cross", type=int, default=0,
                    help="穿线K线之后再额外跳过 N 根K线（等站稳再参与）；默认 0。"
                         "注意：穿线那根本身永远会被跳过")
-
-    # === RSI 过滤器 ===
-    p.add_argument("--use-rsi", action="store_true",
-                   help="启用 RSI 过滤（默认关闭）")
-    p.add_argument("--rsi-period", type=int, default=14, help="RSI 周期，默认 14")
-    p.add_argument("--rsi-long-th", type=float, default=50.0,
-                   help="LONG 要求 RSI >= 此值，默认 50")
-    p.add_argument("--rsi-short-th", type=float, default=50.0,
-                   help="SHORT 要求 RSI <= 此值，默认 50")
-
-    # === ADX 过滤器 ===
-    p.add_argument("--use-adx", action="store_true",
-                   help="启用 ADX 趋势强度过滤（默认关闭）")
-    p.add_argument("--adx-period", type=int, default=14, help="ADX 周期，默认 14")
-    p.add_argument("--adx-threshold", type=float, default=20.0,
-                   help="仅在 ADX >= 此值时允许投注，默认 20")
-
     return p.parse_args()
 
 
@@ -95,7 +74,7 @@ def validate_date(s):
 def fetch_day(exchange, symbol, start_ms, end_ms):
     """分页获取日期范围内的5mK线，额外向前取数据用于布林线预热。"""
     timeframe_ms = 5 * 60 * 1000
-    since = start_ms - 300 * timeframe_ms  # 多取一点给 RSI/ADX 预热
+    since = start_ms - 200 * timeframe_ms
     rows = []
     seen = set()
 
@@ -137,79 +116,13 @@ def money(x):
     return round(float(x), 8)
 
 
-def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder 平滑 RSI"""
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-
-def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """
-    计算 ADX（Average Directional Index）
-    返回 ADX 序列
-    """
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-
-    # True Range
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
-
-    # Directional Movement
-    up_move = high - high.shift(1)
-    down_move = low.shift(1) - low
-
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
-    plus_dm = pd.Series(plus_dm, index=df.index)
-    minus_dm = pd.Series(minus_dm, index=df.index)
-
-    # Wilder 平滑
-    atr = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    plus_di = 100 * (plus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr)
-
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    adx = dx.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-
-    return adx
-
-
 def run_backtest(df, args, day_start_ms, day_end_ms):
     df = df.copy()
-
-    # 布林线
     df["middle"] = df["close"].rolling(args.period).mean()
     df["std"] = df["close"].rolling(args.period).std(ddof=0)
     df["upper"] = df["middle"] + args.std * df["std"]
     df["lower"] = df["middle"] - args.std * df["std"]
     df["middle_prev"] = df["middle"].shift(1)
-
-    # RSI
-    if args.use_rsi:
-        df["rsi"] = compute_rsi(df["close"], args.rsi_period)
-    else:
-        df["rsi"] = np.nan
-
-    # ADX
-    if args.use_adx:
-        df["adx"] = compute_adx(df, args.adx_period)
-    else:
-        df["adx"] = np.nan
 
     rows = []
     stake = args.base
@@ -224,13 +137,12 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
     wins = losses = pushes = 0
     bet_no = 0
 
-    # 统计
+    # 统计：穿线跳过的K线数、冷静期跳过的K线数、指标未预热跳过数
     crossed_skipped = 0
     cooldown_skipped = 0
     skipped_na = 0
-    rsi_filtered = 0
-    adx_filtered = 0
 
+    # 冷静期剩余计数
     cooldown_left = 0
 
     for i in range(0, len(df) - 1):
@@ -244,14 +156,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             skipped_na += 1
             continue
 
-        # 指标未就绪时跳过
-        if args.use_rsi and pd.isna(signal_candle["rsi"]):
-            skipped_na += 1
-            continue
-        if args.use_adx and pd.isna(signal_candle["adx"]):
-            skipped_na += 1
-            continue
-
         body_low = min(float(signal_candle["open"]), float(signal_candle["close"]))
         body_high = max(float(signal_candle["open"]), float(signal_candle["close"]))
         middle = float(signal_candle["middle"])
@@ -260,7 +164,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         # 判断实体与中轨的关系
         is_above = body_low > middle            # 实体完全在中轨上方
         is_below = body_high < middle           # 实体完全在中轨下方
-        is_cross = not is_above and not is_below  # 实体跨过/贴住中轨
+        is_cross = not is_above and not is_below  # 实体跨过/贴住中轨（穿线那根）
 
         # 1) 穿线那根：永远跳过，不投注，并重置冷静期
         if is_cross:
@@ -281,23 +185,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             raw_signal = "SHORT"
         else:
             continue  # 理论上不会到这里
-
-        # ========== RSI 过滤 ==========
-        if args.use_rsi:
-            rsi_val = float(signal_candle["rsi"])
-            if raw_signal == "LONG" and rsi_val < args.rsi_long_th:
-                rsi_filtered += 1
-                continue
-            if raw_signal == "SHORT" and rsi_val > args.rsi_short_th:
-                rsi_filtered += 1
-                continue
-
-        # ========== ADX 过滤 ==========
-        if args.use_adx:
-            adx_val = float(signal_candle["adx"])
-            if adx_val < args.adx_threshold:
-                adx_filtered += 1
-                continue
 
         signal = raw_signal
 
@@ -371,8 +258,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             "boll_middle_prev": money(middle_prev),
             "boll_upper": money(signal_candle["upper"]) if pd.notna(signal_candle["upper"]) else "",
             "boll_lower": money(signal_candle["lower"]) if pd.notna(signal_candle["lower"]) else "",
-            "rsi": money(signal_candle["rsi"]) if args.use_rsi and pd.notna(signal_candle["rsi"]) else "",
-            "adx": money(signal_candle["adx"]) if args.use_adx and pd.notna(signal_candle["adx"]) else "",
             "settle_open": money(next_open),
             "settle_close": money(next_close),
             "event_outcome": outcome,
@@ -398,13 +283,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         "payout_net_multiplier": args.payout,
         "fee_rate": args.fee,
         "cooldown_after_cross": args.cooldown_after_cross,
-        "use_rsi": args.use_rsi,
-        "rsi_period": args.rsi_period,
-        "rsi_long_th": args.rsi_long_th,
-        "rsi_short_th": args.rsi_short_th,
-        "use_adx": args.use_adx,
-        "adx_period": args.adx_period,
-        "adx_threshold": args.adx_threshold,
         "bets": len(rows),
         "wins": wins,
         "losses": losses,
@@ -420,8 +298,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         "crossed_candles_skipped": crossed_skipped,
         "cooldown_candles_skipped": cooldown_skipped,
         "skipped_indicator_nan": skipped_na,
-        "rsi_filtered": rsi_filtered,
-        "adx_filtered": adx_filtered,
     }
     return rows, summary
 
@@ -432,10 +308,6 @@ def main():
         raise SystemExit("参数无效：period>=2、base>0、max-losses>=1、payout>=0、fee>=0")
     if args.cooldown_after_cross < 0:
         raise SystemExit("--cooldown-after-cross 必须 >= 0")
-    if args.rsi_period < 2:
-        raise SystemExit("--rsi-period 必须 >= 2")
-    if args.adx_period < 2:
-        raise SystemExit("--adx-period 必须 >= 2")
 
     day = validate_date(args.date)
     day_start_ms = int(day.timestamp() * 1000)
@@ -474,13 +346,6 @@ def main():
         "中奖净利润倍数": summary["payout_net_multiplier"],
         "手续费率": summary["fee_rate"],
         "穿线后冷静期（根）": summary["cooldown_after_cross"],
-        "启用RSI过滤": summary["use_rsi"],
-        "RSI周期": summary["rsi_period"],
-        "RSI多头阈值(>=)": summary["rsi_long_th"],
-        "RSI空头阈值(<=)": summary["rsi_short_th"],
-        "启用ADX过滤": summary["use_adx"],
-        "ADX周期": summary["adx_period"],
-        "ADX阈值(>=)": summary["adx_threshold"],
         "总投注次数": summary["bets"],
         "盈利次数": summary["wins"],
         "亏损次数": summary["losses"],
@@ -496,13 +361,11 @@ def main():
         "穿线K线跳过数": summary["crossed_candles_skipped"],
         "冷静期跳过K线数": summary["cooldown_candles_skipped"],
         "指标预热期跳过数": summary["skipped_indicator_nan"],
-        "RSI过滤跳过数": summary["rsi_filtered"],
-        "ADX过滤跳过数": summary["adx_filtered"],
     }
 
     with txt_path.open("w", encoding="utf-8-sig") as f:
-        f.write("OKX 5m布林倍投回测汇总（改进版 + RSI/ADX）\n")
-        f.write("=" * 50 + "\n")
+        f.write("OKX 5m布林倍投回测汇总（改进版）\n")
+        f.write("=" * 44 + "\n")
         for key, value in summary_cn.items():
             f.write(f"{key}：{value}\n")
         f.write("\n说明：本回测使用普通5mK线模拟涨跌，不代表OKX特定事件的真实结算结果。\n")
