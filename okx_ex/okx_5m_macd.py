@@ -113,11 +113,11 @@ def print_status(tag, state, extra=None):
     )
 
     parts = [
-        f"[STATUS] {ts}",
-        f"event={tag}",
-        f"stake={state.get('stake')}",
-        f"consec_loss={state.get('consecutive_losses')}",
-        f"pending={state.get('pending')}",
+        f"[状态] {ts}",
+        f"事件={tag}",
+        f"投注={state.get('stake')}",
+        f"连亏={state.get('consecutive_losses')}",
+        f"待结算={state.get('pending')}",
     ]
 
     if extra:
@@ -645,18 +645,22 @@ def settle_pending(
 
     # 状态日志：结算完成
     print_status(
-        "SETTLED",
+        "已结算",
         state,
         {
-            "signal": signal,
-            "entry_close": entry_close,
-            "exit_close": close,
-            "result": "WIN" if win else "LOSS",
-            "last_stake": last_stake,
-            "next_stake": state["stake"],
-            "circuit_break": (
-                state["consecutive_losses"] >= max_losses
-                or state["stake"] <= 0
+            "信号": signal,
+            "开仓价": entry_close,
+            "到期价": close,
+            "结果": "盈利" if win else "亏损",
+            "上笔投注": last_stake,
+            "下笔投注": state["stake"],
+            "是否熔断": (
+                "是"
+                if (
+                    state["consecutive_losses"] >= max_losses
+                    or state["stake"] <= 0
+                )
+                else "否"
             ),
         }
     )
