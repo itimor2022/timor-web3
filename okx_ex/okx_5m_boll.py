@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -11,6 +10,22 @@ UTC + 北京时间双显示版
 2. 实体完全在布林中轨上方 -> UP -> YES
 3. 实体完全在布林中轨下方 -> DOWN -> NO
 4. 实体穿越或触碰中轨 -> 不交易
+
+输赢判定（基于K线）：
+- 信号K线的下一根已收盘K线的 close
+- UP 信号：下一根 close > 信号K线 close -> 赢
+- DOWN 信号：下一根 close < 信号K线 close -> 赢
+- 相等视为输（保守处理）
+
+资金管理：
+- 盈利：连亏清零，投注 = 基础投注额
+- 亏损：连亏+1，投注 = 上一笔投注 * 2 + 基础投注额
+- 连亏达到 --max-losses（默认10）停止下单
+- 投注张数超过 --max-stake（默认1000）停止下单
+
+状态日志：
+- 每笔订单下单成功输出 [STATUS] ORDER_PLACED
+- 每笔订单结算完成输出 [STATUS] SETTLED
 
 事件合约参数：
 tdMode = isolated
@@ -76,6 +91,37 @@ def dual_str(ms):
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+# ============================================================
+# 统一状态日志
+# ============================================================
+
+def print_status(tag, state, extra=None):
+    """
+    统一状态日志
+
+    tag: 事件标签，如 "ORDER_PLACED" / "SETTLED"
+    state: 当前状态 dict
+    extra: 额外字段 dict
+    """
+    ts = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+
+    parts = [
+        f"[STATUS] {ts}",
+        f"event={tag}",
+        f"stake={state.get('stake')}",
+        f"consec_loss={state.get('consecutive_losses')}",
+        f"pending={state.get('pending')}",
+    ]
+
+    if extra:
+        for k, v in extra.items():
+            parts.append(f"{k}={v}")
+
+    print("  ".join(parts))
 
 
 # ============================================================
@@ -268,14 +314,6 @@ def place_event_order(
         "speedBump": "1",
     }
 
-    # print("\n========== 下单参数 ==========")
-
-    # print(json.dumps(
-    #     payload,
-    #     ensure_ascii=False,
-    #     indent=2
-    # ))
-    
     print("\n========== 下单结果 ==========")
     data = _request(
         "POST",
@@ -306,6 +344,12 @@ def get_boll_signal(
     period,
     std_mult
 ):
+    """
+    返回 (signal, closed_ts, closed_close)
+    signal: "UP" / "DOWN" / None
+    closed_ts: 已收盘K线时间戳(ms)
+    closed_close: 已收盘K线收盘价
+    """
 
     limit = max(period + 30, 100)
 
@@ -320,7 +364,7 @@ def get_boll_signal(
         return None, (
             int(ohlcv[-1][0])
             if ohlcv else 0
-        )
+        ), None
 
     df = pd.DataFrame(
         ohlcv,
@@ -358,9 +402,10 @@ def get_boll_signal(
     row = df.iloc[idx]
 
     closed_ts = int(row["ts"])
+    closed_close = float(row["c"])
 
     if pd.isna(row["middle"]):
-        return None, closed_ts
+        return None, closed_ts, closed_close
 
     body_low = min(
         float(row["o"]),
@@ -376,13 +421,35 @@ def get_boll_signal(
 
     if body_low > middle:
 
-        return "UP", closed_ts
+        return "UP", closed_ts, closed_close
 
     elif body_high < middle:
 
-        return "DOWN", closed_ts
+        return "DOWN", closed_ts, closed_close
 
-    return None, closed_ts
+    return None, closed_ts, closed_close
+
+
+# ============================================================
+# 获取最新已收盘K线（用于结算）
+# ============================================================
+
+def get_latest_closed_candle(exchange, symbol):
+    """
+    返回 (ts, close)，倒数第二根为已收盘
+    """
+    ohlcv = exchange.fetch_ohlcv(
+        symbol,
+        timeframe="5m",
+        limit=5
+    )
+
+    if len(ohlcv) < 2:
+        return None, None
+
+    row = ohlcv[-2]
+
+    return int(row[0]), float(row[4])
 
 
 # ============================================================
@@ -402,33 +469,47 @@ def load_state(base_stake):
 
                 state = json.load(f)
 
-            return (
-                state.get("stake", base_stake),
-                state.get("consecutive_losses", 0),
-                state.get("last_processed_ts")
-            )
+            return {
+                "stake": state.get("stake", base_stake),
+                "consecutive_losses": state.get(
+                    "consecutive_losses", 0
+                ),
+                "last_processed_ts": state.get(
+                    "last_processed_ts"
+                ),
+                "pending": state.get("pending", False),
+                "last_signal": state.get("last_signal"),
+                "last_signal_close_ts": state.get(
+                    "last_signal_close_ts"
+                ),
+                "last_signal_close_price": state.get(
+                    "last_signal_close_price"
+                ),
+                "last_stake": state.get("last_stake"),
+            }
 
         except Exception as e:
 
             print(f"读取状态文件失败: {e}")
 
-    return base_stake, 0, None
-
-
-def save_state(
-    stake,
-    consecutive_losses,
-    last_processed_ts
-):
-
-    state = {
-        "stake": stake,
-        "consecutive_losses": consecutive_losses,
-        "last_processed_ts": last_processed_ts,
-        "updated_at": datetime.now(
-            timezone.utc
-        ).isoformat()
+    return {
+        "stake": base_stake,
+        "consecutive_losses": 0,
+        "last_processed_ts": None,
+        "pending": False,
+        "last_signal": None,
+        "last_signal_close_ts": None,
+        "last_signal_close_price": None,
+        "last_stake": None,
     }
+
+
+def save_state(state):
+
+    out = dict(state)
+    out["updated_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     temp_file = STATE_FILE.with_suffix(".tmp")
 
@@ -438,13 +519,142 @@ def save_state(
     ) as f:
 
         json.dump(
-            state,
+            out,
             f,
             ensure_ascii=False,
             indent=2
         )
 
     temp_file.replace(STATE_FILE)
+
+
+# ============================================================
+# 结算上一笔（基于K线）
+# ============================================================
+
+def settle_pending(
+    state,
+    exchange,
+    symbol,
+    base_stake,
+    max_losses,
+    max_stake
+):
+    """
+    若有待结算单，用最新已收盘K线判定输赢并更新状态。
+
+    判定：
+    - 信号K线的下一根已收盘K线 close
+    - UP: close > entry_close -> 赢
+    - DOWN: close < entry_close -> 赢
+    - 相等视为输
+    """
+
+    if not state.get("pending"):
+        return
+
+    ts, close = get_latest_closed_candle(
+        exchange, symbol
+    )
+
+    if ts is None:
+        return
+
+    entry_ts = state.get("last_signal_close_ts")
+
+    if entry_ts is None or ts <= entry_ts:
+        # 下一根还没收盘，继续等
+        return
+
+    signal = state.get("last_signal")
+    entry_close = state.get("last_signal_close_price")
+    last_stake = state.get("last_stake") or base_stake
+
+    if entry_close is None:
+        # 数据异常，直接清除 pending
+        print("[结算] 缺少开仓价格，放弃结算")
+        state["pending"] = False
+        save_state(state)
+        return
+
+    if signal == "UP":
+        win = close > entry_close
+    elif signal == "DOWN":
+        win = close < entry_close
+    else:
+        print(f"[结算] 未知信号 {signal}，放弃结算")
+        state["pending"] = False
+        save_state(state)
+        return
+
+    print(
+        f"\n[结算 {dual_str(ts)}] "
+        f"信号={signal}, "
+        f"开仓close={entry_close}, "
+        f"到期close={close} "
+        f"-> {'盈利' if win else '亏损'}"
+    )
+
+    if win:
+        state["consecutive_losses"] = 0
+        state["stake"] = base_stake
+        print(
+            f"  连亏清零，"
+            f"下一笔投注 = {state['stake']} 张"
+        )
+    else:
+        state["consecutive_losses"] += 1
+        new_stake = last_stake * 2 + base_stake
+        state["stake"] = new_stake
+        print(
+            f"  连亏={state['consecutive_losses']}, "
+            f"上一笔={last_stake}, "
+            f"下一笔投注 = {new_stake} 张"
+        )
+
+    # 清理待结算字段
+    state["pending"] = False
+    state["last_signal"] = None
+    state["last_signal_close_ts"] = None
+    state["last_signal_close_price"] = None
+    state["last_stake"] = None
+
+    # 风控：连亏上限
+    if state["consecutive_losses"] >= max_losses:
+        print(
+            f"\n!!! 已连续亏损 "
+            f"{state['consecutive_losses']} 次，"
+            f"达到风控上限 {max_losses}，停止下单 !!!"
+        )
+        state["stake"] = 0
+
+    # 风控：投注上限
+    elif state["stake"] > max_stake:
+        print(
+            f"\n!!! 下一笔投注 {state['stake']} 张 "
+            f"超过上限 {max_stake}，停止下单 !!!"
+        )
+        state["stake"] = 0
+
+    # 状态日志：结算完成
+    print_status(
+        "SETTLED",
+        state,
+        {
+            "signal": signal,
+            "entry_close": entry_close,
+            "exit_close": close,
+            "result": "WIN" if win else "LOSS",
+            "last_stake": last_stake,
+            "next_stake": state["stake"],
+            "circuit_break": (
+                state["consecutive_losses"] >= max_losses
+                or state["stake"] <= 0
+            ),
+        }
+    )
+
+    save_state(state)
 
 
 # ============================================================
@@ -489,7 +699,15 @@ def main():
     parser.add_argument(
         "--max-losses",
         type=int,
-        default=10
+        default=10,
+        help="连亏多少次后停止下单"
+    )
+
+    parser.add_argument(
+        "--max-stake",
+        type=float,
+        default=1000.0,
+        help="单笔投注张数上限，超过则停止下单"
     )
 
     parser.add_argument(
@@ -529,6 +747,14 @@ def main():
         print("错误：轮询间隔必须大于0")
         sys.exit(1)
 
+    if args.max_losses < 1:
+        print("错误：--max-losses 必须大于等于1")
+        sys.exit(1)
+
+    if args.max_stake <= 0:
+        print("错误：--max-stake 必须大于0")
+        sys.exit(1)
+
     if args.live and not all([
         API_KEY,
         SECRET_KEY,
@@ -546,9 +772,7 @@ def main():
         "enableRateLimit": True
     })
 
-    stake, consecutive_losses, last_processed_ts = (
-        load_state(args.base)
-    )
+    state = load_state(args.base)
 
     print("=" * 65)
 
@@ -565,9 +789,17 @@ def main():
         f"标准差={args.std}"
     )
 
-    print(f"基础投注数量: {stake} 张")
+    print(f"基础投注数量: {args.base} 张")
 
-    print(f"连亏次数: {consecutive_losses}")
+    print(f"当前投注数量: {state['stake']} 张")
+
+    print(f"连亏次数: {state['consecutive_losses']}")
+
+    print(f"连亏上限: {args.max_losses}")
+
+    print(f"单笔投注上限: {args.max_stake} 张")
+
+    print(f"待结算单: {state['pending']}")
 
     print(
         f"UP 对应 outcome: {args.up_outcome}"
@@ -587,11 +819,40 @@ def main():
 
         try:
 
-            signal, closed_ts = get_boll_signal(
+            # 1) 先结算上一笔
+            settle_pending(
+                state,
                 exchange,
                 args.symbol,
-                args.period,
-                args.std
+                args.base,
+                args.max_losses,
+                args.max_stake
+            )
+
+            # 2) 熔断检查
+            if state["consecutive_losses"] >= args.max_losses:
+                print(
+                    "风控熔断中（连亏上限），跳过本轮"
+                )
+                time.sleep(args.poll_interval)
+                continue
+
+            if state["stake"] <= 0:
+                print(
+                    "当前投注张数为0（已熔断或超上限），"
+                    "跳过本轮。请检查状态文件。"
+                )
+                time.sleep(args.poll_interval)
+                continue
+
+            # 3) 获取信号
+            signal, closed_ts, closed_close = (
+                get_boll_signal(
+                    exchange,
+                    args.symbol,
+                    args.period,
+                    args.std
+                )
             )
 
             if not closed_ts:
@@ -599,19 +860,13 @@ def main():
                 continue
 
             # 同一根K线只处理一次
-            if closed_ts == last_processed_ts:
-
+            if closed_ts == state["last_processed_ts"]:
                 time.sleep(args.poll_interval)
                 continue
 
             # 先记录处理时间，避免异常后重复提交
-            last_processed_ts = closed_ts
-
-            save_state(
-                stake,
-                consecutive_losses,
-                last_processed_ts
-            )
+            state["last_processed_ts"] = closed_ts
+            save_state(state)
 
             if signal is None:
 
@@ -698,7 +953,14 @@ def main():
                 time.sleep(args.poll_interval)
                 continue
 
-            contracts = stake
+            contracts = state["stake"]
+
+            if contracts <= 0:
+                print("  投注张数为0，跳过")
+                time.sleep(args.poll_interval)
+                continue
+
+            result = None
 
             if not args.live:
 
@@ -733,6 +995,31 @@ def main():
                 print(
                     f"  sCode={result.get('sCode')}"
                 )
+
+            # 4) 记录待结算（LIVE 与 DRY RUN 都记录）
+            state["pending"] = True
+            state["last_signal"] = signal
+            state["last_signal_close_ts"] = closed_ts
+            state["last_signal_close_price"] = closed_close
+            state["last_stake"] = contracts
+            save_state(state)
+
+            # 状态日志：下单完成
+            print_status(
+                "ORDER_PLACED",
+                state,
+                {
+                    "instId": inst_id,
+                    "outcome": outcome,
+                    "sz": contracts,
+                    "signal": signal,
+                    "closed_ts": closed_ts,
+                    "ordId": (
+                        result.get("ordId")
+                        if result else "DRY_RUN"
+                    ),
+                }
+            )
 
         except KeyboardInterrupt:
 

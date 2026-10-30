@@ -1,6 +1,11 @@
 {
-  "stake": 10.0,
-  "consecutive_losses": 0,
-  "last_processed_ts": 1793335200000,
-  "updated_at": "2026-10-30T04:45:28.685055+00:00"
+  "stake": 30.0,
+  "consecutive_losses": 1,
+  "last_processed_ts": 1793337600000,
+  "pending": false,
+  "last_signal": null,
+  "last_signal_close_ts": null,
+  "last_signal_close_price": null,
+  "last_stake": null,
+  "updated_at": "2026-10-30T05:25:11.021150+00:00"
 }
