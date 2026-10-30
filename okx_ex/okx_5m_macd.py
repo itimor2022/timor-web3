@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-OKX 事件合约 BTC 5分钟 MACD 自动交易
+OKX 事件合约 BTC 5分钟 MACD 自动交易（买 T+1 轮）
 UTC + 北京时间双显示版
 
 策略：
-1. 已收盘5分钟K线
+1. 已收盘5分钟K线 T
 2. MACD 多头（DIF>DEA 且 HIST>0）且该K线收阳 -> UP -> YES
 3. MACD 空头（DIF<DEA 且 HIST<0）且该K线收阴 -> DOWN -> NO
 4. 其他（交叉、柱体接近0、K线方向与MACD不一致）-> 不交易
@@ -14,11 +14,15 @@ UTC + 北京时间双显示版
 MACD 参数：
 fast=6, slow=13, signal=5（可通过命令行调整）
 
-输赢判定（基于K线）：
-- 信号K线的下一根已收盘K线的 close
-- UP 信号：下一根 close > 信号K线 close -> 赢
-- DOWN 信号：下一根 close < 信号K线 close -> 赢
-- 相等视为输（保守处理）
+买 T+1 轮：
+- 信号来自 T，但下单目标是 expTime > T+5min 的第二个合约（到期 T+10min）
+- 结算用 T+2 close vs T+1 close（对应 T+1 合约的到期区间）
+- 方向仍用 T 的 MACD 信号
+
+输赢判定：
+- UP 信号：T+2 close > T+1 close -> 赢
+- DOWN 信号：T+2 close < T+1 close -> 赢
+- 相等视为输
 
 资金管理：
 - 盈利：连亏清零，投注 = 基础投注额
@@ -27,8 +31,8 @@ fast=6, slow=13, signal=5（可通过命令行调整）
 - 投注张数超过 --max-stake（默认1000）停止下单
 
 状态日志：
-- 每笔订单下单成功输出 [STATUS] ORDER_PLACED
-- 每笔订单结算完成输出 [STATUS] SETTLED
+- 每笔订单下单成功输出 [状态] 已下单
+- 每笔订单结算完成输出 [状态] 已结算
 
 事件合约参数：
 tdMode = isolated
@@ -65,7 +69,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = "https://www.okx.com"
-STATE_FILE = Path("event_trade_state.json")
+STATE_FILE = Path(__file__).resolve().parent / "event_trade_state.json"
 
 API_KEY = os.getenv("OKX_API_KEY", "")
 SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
@@ -79,16 +83,8 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 # ============================================================
 
 def dual_str(ms):
-    utc_part = datetime.fromtimestamp(
-        ms / 1000,
-        tz=timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    bj_part = datetime.fromtimestamp(
-        ms / 1000,
-        tz=BEIJING_TZ
-    ).strftime("%H:%M:%S 北京")
-
+    utc_part = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    bj_part = datetime.fromtimestamp(ms / 1000, tz=BEIJING_TZ).strftime("%H:%M:%S 北京")
     return f"{utc_part} / {bj_part}"
 
 
@@ -101,17 +97,7 @@ def now_ms():
 # ============================================================
 
 def print_status(tag, state, extra=None):
-    """
-    统一状态日志
-
-    tag: 事件标签，如 "ORDER_PLACED" / "SETTLED"
-    state: 当前状态 dict
-    extra: 额外字段 dict
-    """
-    ts = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     parts = [
         f"[状态] {ts}",
         f"事件={tag}",
@@ -119,42 +105,28 @@ def print_status(tag, state, extra=None):
         f"连亏={state.get('consecutive_losses')}",
         f"待结算={state.get('pending')}",
     ]
-
     if extra:
         for k, v in extra.items():
             parts.append(f"{k}={v}")
-
     print("  ".join(parts))
 
 
 # ============================================================
-# OKX API 签名
+# OKX API
 # ============================================================
 
 def _timestamp():
     now = datetime.now(timezone.utc)
-
-    return (
-        now.strftime("%Y-%m-%dT%H:%M:%S.")
-        + f"{now.microsecond // 1000:03d}Z"
-    )
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def _sign(ts, method, path, body=""):
-    message = ts + method.upper() + path + body
-
-    mac = hmac.new(
-        SECRET_KEY.encode(),
-        message.encode(),
-        hashlib.sha256
-    )
-
+    mac = hmac.new(SECRET_KEY.encode(), (ts + method.upper() + path + body).encode(), hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
 
 
 def _headers(method, path, body=""):
     ts = _timestamp()
-
     return {
         "OK-ACCESS-KEY": API_KEY,
         "OK-ACCESS-SIGN": _sign(ts, method, path, body),
@@ -165,146 +137,74 @@ def _headers(method, path, body=""):
 
 
 def _request(method, path, payload=None):
-
     method = method.upper()
-
-    body = (
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":")
-        )
-        if payload is not None else ""
-    )
-
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) if payload is not None else ""
     headers = _headers(method, path, body)
-
     url = BASE_URL + path
 
     if method == "GET":
-        resp = requests.get(
-            url,
-            headers=headers,
-            timeout=15
-        )
+        resp = requests.get(url, headers=headers, timeout=15)
     else:
-        resp = requests.post(
-            url,
-            headers=headers,
-            data=body.encode("utf-8"),
-            timeout=15
-        )
+        resp = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=15)
 
     resp.raise_for_status()
-
-    try:
-        data = resp.json()
-    except ValueError:
-        raise RuntimeError(
-            f"OKX返回非JSON数据: {resp.text[:500]}"
-        )
+    data = resp.json()
 
     if data.get("code") != "0":
         detail = ""
-
         if data.get("data"):
             item = data["data"][0]
-
-            detail = (
-                f" | sCode={item.get('sCode')}"
-                f" | sMsg={item.get('sMsg')}"
-            )
-
-        raise RuntimeError(
-            f"API错误 [{data.get('code')}]: "
-            f"{data.get('msg')}{detail}"
-        )
-
+            detail = f" | sCode={item.get('sCode')} | sMsg={item.get('sMsg')}"
+        raise RuntimeError(f"API错误 [{data.get('code')}]: {data.get('msg')}{detail}")
     return data
 
 
 # ============================================================
-# 查询事件合约
+# 事件合约查询
 # ============================================================
 
 def get_live_markets(series_id):
-
-    path = (
-        "/api/v5/public/event-contract/markets"
-        f"?seriesId={series_id}&state=live"
-    )
-
-    data = _request("GET", path)
-
-    return data.get("data", [])
+    path = f"/api/v5/public/event-contract/markets?seriesId={series_id}&state=live"
+    return _request("GET", path).get("data", [])
 
 
-def match_contract_by_signal_time(markets, signal_ts_ms):
-
+def match_contract_by_signal_time(markets, signal_ts_ms, skip=1):
+    """
+    skip=0: 取最近一个（买本轮）
+    skip=1: 跳过最近一个，取第二个（买 T+1 轮）
+    """
     candidates = []
-
-    for market in markets:
-
-        exp = market.get("expTime")
-
+    for m in markets:
+        exp = m.get("expTime")
         if not exp:
             continue
-
         try:
             exp_ms = int(exp)
         except (ValueError, TypeError):
             continue
-
         if exp_ms > signal_ts_ms:
-
-            candidates.append(
-                (exp_ms, market)
-            )
-
-    if not candidates:
-        return None, None
+            candidates.append((exp_ms, m))
 
     candidates.sort(key=lambda x: x[0])
 
-    best_exp, best_market = candidates[0]
+    if len(candidates) <= skip:
+        return None, None
 
-    return best_market, best_exp
+    return candidates[skip][1], candidates[skip][0]
 
 
 # ============================================================
 # 事件合约下单
 # ============================================================
 
-def place_event_order(
-    inst_id,
-    outcome,
-    contracts
-):
-    """
-    OKX事件合约下单
-
-    tdMode: isolated
-    outcome: yes / no
-    speedBump: 1
-    side: buy
-
-    contracts: 合约张数
-    """
-
+def place_event_order(inst_id, outcome, contracts):
     if outcome not in ("yes", "no"):
-        raise ValueError(
-            f"非法 outcome: {outcome}"
-        )
-
+        raise ValueError(f"非法 outcome: {outcome}")
     if contracts <= 0:
         raise ValueError("下单数量必须大于0")
 
     path = "/api/v5/trade/order"
-
-    # 使用固定信号标识，辅助防止重复委托
-    cl_ord_id = hashlib.md5(
-        f"{inst_id}_{outcome}_{contracts}".encode()
-    ).hexdigest()[:32]
+    cl_ord_id = hashlib.md5(f"{inst_id}_{outcome}_{contracts}".encode()).hexdigest()[:32]
 
     payload = {
         "instId": inst_id,
@@ -318,22 +218,11 @@ def place_event_order(
     }
 
     print("\n========== 下单结果 ==========")
-    data = _request(
-        "POST",
-        path,
-        payload
-    )
-
+    data = _request("POST", path, payload)
     result = data["data"][0]
 
     if result.get("sCode") != "0":
-
-        raise RuntimeError(
-            f"下单失败: "
-            f"sCode={result.get('sCode')}, "
-            f"sMsg={result.get('sMsg')}"
-        )
-
+        raise RuntimeError(f"下单失败: sCode={result.get('sCode')}, sMsg={result.get('sMsg')}")
     return result
 
 
@@ -341,76 +230,33 @@ def place_event_order(
 # MACD 信号
 # ============================================================
 
-def get_macd_signal(
-    exchange,
-    symbol,
-    fast,
-    slow,
-    signal_period
-):
+def get_macd_signal(exchange, symbol, fast, slow, signal_period):
     """
     返回 (signal, closed_ts, closed_close)
     signal: "UP" / "DOWN" / None
-    closed_ts: 已收盘K线时间戳(ms)
-    closed_close: 已收盘K线收盘价
 
     规则（基于已收盘K线）：
     - DIF > DEA 且 HIST > 0 且 close >= open -> UP
     - DIF < DEA 且 HIST < 0 且 close <= open -> DOWN
     - 其他 -> None
-
-    如需严格金叉/死叉当根才交易，可改为：
-    - 上一根 DIF <= DEA 且当前根 DIF > DEA -> UP
-    - 上一根 DIF >= DEA 且当前根 DIF < DEA -> DOWN
     """
 
     limit = max(slow + signal_period + 30, 100)
-
-    ohlcv = exchange.fetch_ohlcv(
-        symbol,
-        timeframe="5m",
-        limit=limit
-    )
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=limit)
 
     if len(ohlcv) < slow + signal_period + 2:
+        return None, (int(ohlcv[-1][0]) if ohlcv else 0), None
 
-        return None, (
-            int(ohlcv[-1][0])
-            if ohlcv else 0
-        ), None
+    df = pd.DataFrame(ohlcv, columns=["ts", "o", "h", "l", "c", "v"])
 
-    df = pd.DataFrame(
-        ohlcv,
-        columns=[
-            "ts",
-            "o",
-            "h",
-            "l",
-            "c",
-            "v"
-        ]
-    )
-
-    # EMA 计算
-    ema_fast = df["c"].ewm(
-        span=fast, adjust=False
-    ).mean()
-
-    ema_slow = df["c"].ewm(
-        span=slow, adjust=False
-    ).mean()
+    ema_fast = df["c"].ewm(span=fast, adjust=False).mean()
+    ema_slow = df["c"].ewm(span=slow, adjust=False).mean()
 
     df["dif"] = ema_fast - ema_slow
-
-    df["dea"] = df["dif"].ewm(
-        span=signal_period, adjust=False
-    ).mean()
-
+    df["dea"] = df["dif"].ewm(span=signal_period, adjust=False).mean()
     df["hist"] = df["dif"] - df["dea"]
 
-    # 最后一根K线可能尚未收盘
     idx = len(df) - 2
-
     row = df.iloc[idx]
 
     closed_ts = int(row["ts"])
@@ -422,41 +268,19 @@ def get_macd_signal(
     dif = float(row["dif"])
     dea = float(row["dea"])
     hist = float(row["hist"])
-
     o = float(row["o"])
     c = float(row["c"])
 
     if dif > dea and hist > 0 and c >= o:
-
         return "UP", closed_ts, closed_close
-
     elif dif < dea and hist < 0 and c <= o:
-
         return "DOWN", closed_ts, closed_close
 
     return None, closed_ts, closed_close
 
 
-# ============================================================
-# 获取最新已收盘K线（用于结算）
-# ============================================================
-
-def get_latest_closed_candle(exchange, symbol):
-    """
-    返回 (ts, close)，倒数第二根为已收盘
-    """
-    ohlcv = exchange.fetch_ohlcv(
-        symbol,
-        timeframe="5m",
-        limit=5
-    )
-
-    if len(ohlcv) < 2:
-        return None, None
-
-    row = ohlcv[-2]
-
-    return int(row[0]), float(row[4])
+def get_klines(exchange, symbol, limit=10):
+    return exchange.fetch_ohlcv(symbol, timeframe="5m", limit=limit)
 
 
 # ============================================================
@@ -464,207 +288,120 @@ def get_latest_closed_candle(exchange, symbol):
 # ============================================================
 
 def load_state(base_stake):
-
     if STATE_FILE.exists():
-
         try:
-
-            with STATE_FILE.open(
-                "r",
-                encoding="utf-8"
-            ) as f:
-
-                state = json.load(f)
-
+            with STATE_FILE.open("r", encoding="utf-8") as f:
+                s = json.load(f)
             return {
-                "stake": state.get("stake", base_stake),
-                "consecutive_losses": state.get(
-                    "consecutive_losses", 0
-                ),
-                "last_processed_ts": state.get(
-                    "last_processed_ts"
-                ),
-                "pending": state.get("pending", False),
-                "last_signal": state.get("last_signal"),
-                "last_signal_close_ts": state.get(
-                    "last_signal_close_ts"
-                ),
-                "last_signal_close_price": state.get(
-                    "last_signal_close_price"
-                ),
-                "last_stake": state.get("last_stake"),
+                "stake": s.get("stake", base_stake),
+                "consecutive_losses": s.get("consecutive_losses", 0),
+                "last_processed_ts": s.get("last_processed_ts"),
+                "pending": s.get("pending", False),
+                "last_signal": s.get("last_signal"),
+                "last_signal_ts": s.get("last_signal_ts"),
+                "last_stake": s.get("last_stake"),
             }
-
         except Exception as e:
-
-            print(f"读取状态文件失败: {e}")
-
+            print(f"读取状态失败: {e}")
     return {
         "stake": base_stake,
         "consecutive_losses": 0,
         "last_processed_ts": None,
         "pending": False,
         "last_signal": None,
-        "last_signal_close_ts": None,
-        "last_signal_close_price": None,
+        "last_signal_ts": None,
         "last_stake": None,
     }
 
 
 def save_state(state):
-
     out = dict(state)
-    out["updated_at"] = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    temp_file = STATE_FILE.with_suffix(".tmp")
-
-    with temp_file.open(
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            out,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    temp_file.replace(STATE_FILE)
+    out["updated_at"] = datetime.now(timezone.utc).isoformat()
+    temp = STATE_FILE.with_suffix(".tmp")
+    with temp.open("w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    temp.replace(STATE_FILE)
 
 
 # ============================================================
-# 结算上一笔（基于K线）
+# 结算（买 T+1 轮：T+2 close vs T+1 close）
 # ============================================================
 
-def settle_pending(
-    state,
-    exchange,
-    symbol,
-    base_stake,
-    max_losses,
-    max_stake
-):
-    """
-    若有待结算单，用最新已收盘K线判定输赢并更新状态。
-
-    判定：
-    - 信号K线的下一根已收盘K线 close
-    - UP: close > entry_close -> 赢
-    - DOWN: close < entry_close -> 赢
-    - 相等视为输
-    """
-
+def settle_pending(state, exchange, symbol, base_stake, max_losses, max_stake):
     if not state.get("pending"):
         return
 
-    ts, close = get_latest_closed_candle(
-        exchange, symbol
-    )
-
-    if ts is None:
+    klines = get_klines(exchange, symbol, limit=10)
+    if len(klines) < 3:
         return
 
-    entry_ts = state.get("last_signal_close_ts")
-
-    if entry_ts is None or ts <= entry_ts:
-        # 下一根还没收盘，继续等
+    signal_ts = state.get("last_signal_ts")
+    if signal_ts is None:
+        state["pending"] = False
+        save_state(state)
         return
+
+    idx = None
+    for i, k in enumerate(klines):
+        if int(k[0]) == signal_ts:
+            idx = i
+            break
+
+    if idx is None:
+        return
+
+    # 需要 T+1 和 T+2 都已收盘（最后一根是当前未收盘）
+    if idx + 2 >= len(klines) - 1:
+        return
+
+    t1_close = float(klines[idx + 1][4])
+    t2_close = float(klines[idx + 2][4])
 
     signal = state.get("last_signal")
-    entry_close = state.get("last_signal_close_price")
     last_stake = state.get("last_stake") or base_stake
 
-    if entry_close is None:
-        # 数据异常，直接清除 pending
-        print("[结算] 缺少开仓价格，放弃结算")
-        state["pending"] = False
-        save_state(state)
-        return
-
     if signal == "UP":
-        win = close > entry_close
+        win = t2_close > t1_close
     elif signal == "DOWN":
-        win = close < entry_close
+        win = t2_close < t1_close
     else:
-        print(f"[结算] 未知信号 {signal}，放弃结算")
         state["pending"] = False
         save_state(state)
         return
 
-    print(
-        f"\n[结算 {dual_str(ts)}] "
-        f"信号={signal}, "
-        f"开仓close={entry_close}, "
-        f"到期close={close} "
-        f"-> {'盈利' if win else '亏损'}"
-    )
+    print(f"\n[结算] 信号={signal}, T+1 close={t1_close}, T+2 close={t2_close} -> {'盈利' if win else '亏损'}")
 
     if win:
         state["consecutive_losses"] = 0
         state["stake"] = base_stake
-        print(
-            f"  连亏清零，"
-            f"下一笔投注 = {state['stake']} 张"
-        )
+        print(f"  连亏清零，下一笔 = {base_stake} 张")
     else:
         state["consecutive_losses"] += 1
         new_stake = last_stake * 2 + base_stake
         state["stake"] = new_stake
-        print(
-            f"  连亏={state['consecutive_losses']}, "
-            f"上一笔={last_stake}, "
-            f"下一笔投注 = {new_stake} 张"
-        )
+        print(f"  连亏={state['consecutive_losses']}, 上一笔={last_stake}, 下一笔={new_stake} 张")
 
-    # 清理待结算字段
     state["pending"] = False
     state["last_signal"] = None
-    state["last_signal_close_ts"] = None
-    state["last_signal_close_price"] = None
+    state["last_signal_ts"] = None
     state["last_stake"] = None
 
-    # 风控：连亏上限
     if state["consecutive_losses"] >= max_losses:
-        print(
-            f"\n!!! 已连续亏损 "
-            f"{state['consecutive_losses']} 次，"
-            f"达到风控上限 {max_losses}，停止下单 !!!"
-        )
+        print(f"\n!!! 连亏 {max_losses} 次，熔断 !!!")
         state["stake"] = 0
-
-    # 风控：投注上限
     elif state["stake"] > max_stake:
-        print(
-            f"\n!!! 下一笔投注 {state['stake']} 张 "
-            f"超过上限 {max_stake}，停止下单 !!!"
-        )
+        print(f"\n!!! 下笔投注 {state['stake']} 超上限 {max_stake}，熔断 !!!")
         state["stake"] = 0
 
-    # 状态日志：结算完成
-    print_status(
-        "已结算",
-        state,
-        {
-            "信号": signal,
-            "开仓价": entry_close,
-            "到期价": close,
-            "结果": "盈利" if win else "亏损",
-            "上笔投注": last_stake,
-            "下笔投注": state["stake"],
-            "是否熔断": (
-                "是"
-                if (
-                    state["consecutive_losses"] >= max_losses
-                    or state["stake"] <= 0
-                )
-                else "否"
-            ),
-        }
-    )
-
+    print_status("已结算", state, {
+        "信号": signal,
+        "T+1价": t1_close,
+        "T+2价": t2_close,
+        "结果": "盈利" if win else "亏损",
+        "上笔投注": last_stake,
+        "下笔投注": state["stake"],
+        "是否熔断": "是" if state["stake"] <= 0 else "否",
+    })
     save_state(state)
 
 
@@ -673,388 +410,127 @@ def settle_pending(
 # ============================================================
 
 def main():
-
-    parser = argparse.ArgumentParser(
-        description="OKX事件合约5分钟MACD自动交易"
-    )
-
-    parser.add_argument(
-        "--series-id",
-        default="BTC-UPDOWN-5MIN"
-    )
-
-    parser.add_argument(
-        "--symbol",
-        default="BTC/USDT"
-    )
-
-    parser.add_argument(
-        "--fast",
-        type=int,
-        default=6
-    )
-
-    parser.add_argument(
-        "--slow",
-        type=int,
-        default=13
-    )
-
-    parser.add_argument(
-        "--signal-period",
-        type=int,
-        default=5
-    )
-
-    parser.add_argument(
-        "--base",
-        type=float,
-        default=10.0,
-        help="基础投注数量（合约张数）"
-    )
-
-    parser.add_argument(
-        "--max-losses",
-        type=int,
-        default=10,
-        help="连亏多少次后停止下单"
-    )
-
-    parser.add_argument(
-        "--max-stake",
-        type=float,
-        default=1000.0,
-        help="单笔投注张数上限，超过则停止下单"
-    )
-
-    parser.add_argument(
-        "--up-outcome",
-        choices=["yes", "no"],
-        default="yes"
-    )
-
-    parser.add_argument(
-        "--down-outcome",
-        choices=["yes", "no"],
-        default="no"
-    )
-
-    parser.add_argument(
-        "--live",
-        action="store_true"
-    )
-
-    parser.add_argument(
-        "--poll-interval",
-        type=int,
-        default=15
-    )
+    parser = argparse.ArgumentParser(description="OKX事件合约5分钟MACD自动交易（买T+1轮）")
+    parser.add_argument("--series-id", default="BTC-UPDOWN-5MIN")
+    parser.add_argument("--symbol", default="BTC/USDT")
+    parser.add_argument("--fast", type=int, default=6)
+    parser.add_argument("--slow", type=int, default=13)
+    parser.add_argument("--signal-period", type=int, default=5)
+    parser.add_argument("--base", type=float, default=10.0)
+    parser.add_argument("--max-losses", type=int, default=10)
+    parser.add_argument("--max-stake", type=float, default=1000.0)
+    parser.add_argument("--up-outcome", choices=["yes", "no"], default="yes")
+    parser.add_argument("--down-outcome", choices=["yes", "no"], default="no")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--poll-interval", type=int, default=15)
 
     args = parser.parse_args()
 
     if args.fast < 1 or args.slow < 1 or args.signal_period < 1:
-        print("错误：MACD 参数必须大于等于1")
-        sys.exit(1)
-
+        print("错误：MACD 参数必须>=1"); sys.exit(1)
     if args.fast >= args.slow:
-        print("错误：--fast 必须小于 --slow")
-        sys.exit(1)
-
+        print("错误：--fast 必须小于 --slow"); sys.exit(1)
     if args.base <= 0:
-        print("错误：基础投注数量必须大于0")
-        sys.exit(1)
-
+        print("错误：基础投注必须>0"); sys.exit(1)
     if args.poll_interval < 1:
-        print("错误：轮询间隔必须大于0")
-        sys.exit(1)
-
+        print("错误：轮询间隔必须>0"); sys.exit(1)
     if args.max_losses < 1:
-        print("错误：--max-losses 必须大于等于1")
-        sys.exit(1)
-
+        print("错误：--max-losses 必须>=1"); sys.exit(1)
     if args.max_stake <= 0:
-        print("错误：--max-stake 必须大于0")
-        sys.exit(1)
+        print("错误：--max-stake 必须>0"); sys.exit(1)
 
-    if args.live and not all([
-        API_KEY,
-        SECRET_KEY,
-        PASSPHRASE
-    ]):
+    if args.live and not all([API_KEY, SECRET_KEY, PASSPHRASE]):
+        print("错误：LIVE需要配置API密钥"); sys.exit(1)
 
-        print(
-            "错误：LIVE需要配置OKX_API_KEY、"
-            "OKX_SECRET_KEY、OKX_PASSPHRASE"
-        )
-
-        sys.exit(1)
-
-    exchange = ccxt.okx({
-        "enableRateLimit": True
-    })
-
+    exchange = ccxt.okx({"enableRateLimit": True})
     state = load_state(args.base)
 
     print("=" * 65)
-
-    print(
-        f"模式: {'LIVE 实盘交易' if args.live else 'DRY RUN 模拟运行'}"
-    )
-
-    print(f"系列: {args.series_id}")
-
-    print(f"交易品种: {args.symbol}")
-
-    print(
-        f"MACD: fast={args.fast}, "
-        f"slow={args.slow}, "
-        f"signal={args.signal_period}"
-    )
-
-    print(f"基础投注数量: {args.base} 张")
-
-    print(f"当前投注数量: {state['stake']} 张")
-
-    print(f"连亏次数: {state['consecutive_losses']}")
-
-    print(f"连亏上限: {args.max_losses}")
-
-    print(f"单笔投注上限: {args.max_stake} 张")
-
-    print(f"待结算单: {state['pending']}")
-
-    print(
-        f"UP 对应 outcome: {args.up_outcome}"
-    )
-
-    print(
-        f"DOWN 对应 outcome: {args.down_outcome}"
-    )
-
-    print("交易模式: isolated")
-
-    print("时间: UTC / 北京时间")
-
+    print(f"模式: {'LIVE' if args.live else 'DRY RUN'}")
+    print(f"系列: {args.series_id}, 品种: {args.symbol}")
+    print(f"MACD: fast={args.fast}, slow={args.slow}, signal={args.signal_period}")
+    print(f"基础投注: {args.base}, 当前: {state['stake']}")
+    print(f"连亏: {state['consecutive_losses']}/{args.max_losses}")
+    print(f"投注上限: {args.max_stake}")
+    print(f"待结算: {state['pending']}")
+    print("策略: 买 T+1 轮（跳过最近合约）")
+    print("结算: T+2 close vs T+1 close")
     print("=" * 65)
 
     while True:
-
         try:
+            settle_pending(state, exchange, args.symbol, args.base, args.max_losses, args.max_stake)
 
-            # 1) 先结算上一笔
-            settle_pending(
-                state,
-                exchange,
-                args.symbol,
-                args.base,
-                args.max_losses,
-                args.max_stake
-            )
-
-            # 2) 熔断检查
             if state["consecutive_losses"] >= args.max_losses:
-                print(
-                    "风控熔断中（连亏上限），跳过本轮"
-                )
-                time.sleep(args.poll_interval)
-                continue
-
+                print("熔断中（连亏上限）"); time.sleep(args.poll_interval); continue
             if state["stake"] <= 0:
-                print(
-                    "当前投注张数为0（已熔断或超上限），"
-                    "跳过本轮。请检查状态文件。"
-                )
-                time.sleep(args.poll_interval)
-                continue
+                print("投注为0（熔断/超限），跳过"); time.sleep(args.poll_interval); continue
 
-            # 3) 获取信号
-            signal, closed_ts, closed_close = (
-                get_macd_signal(
-                    exchange,
-                    args.symbol,
-                    args.fast,
-                    args.slow,
-                    args.signal_period
-                )
+            signal, closed_ts, closed_close = get_macd_signal(
+                exchange, args.symbol, args.fast, args.slow, args.signal_period
             )
 
             if not closed_ts:
-                time.sleep(args.poll_interval)
-                continue
-
-            # 同一根K线只处理一次
+                time.sleep(args.poll_interval); continue
             if closed_ts == state["last_processed_ts"]:
-                time.sleep(args.poll_interval)
-                continue
+                time.sleep(args.poll_interval); continue
 
-            # 先记录处理时间，避免异常后重复提交
             state["last_processed_ts"] = closed_ts
             save_state(state)
 
             if signal is None:
+                print(f"[{dual_str(closed_ts)}] 无信号（MACD交叉/柱体为0/K线方向不一致）")
+                time.sleep(args.poll_interval); continue
 
-                print(
-                    f"[{dual_str(closed_ts)}] "
-                    "无明确信号（MACD交叉、柱体为0或K线方向不一致）"
-                )
+            print(f"\n[{dual_str(closed_ts)}] MACD信号: {signal}")
+            outcome = args.up_outcome if signal == "UP" else args.down_outcome
+            print(f"  outcome: {outcome}")
 
-                time.sleep(args.poll_interval)
-                continue
-
-            print(
-                f"\n[{dual_str(closed_ts)}] "
-                f"MACD信号: {signal}"
-            )
-
-            # 策略方向映射
-            outcome = (
-                args.up_outcome
-                if signal == "UP"
-                else args.down_outcome
-            )
-
-            print(
-                f"  策略信号: {signal}"
-            )
-
-            print(
-                f"  OKX outcome: {outcome}"
-            )
-
-            # 查询市场
-            markets = get_live_markets(
-                args.series_id
-            )
-
+            markets = get_live_markets(args.series_id)
             if not markets:
+                print("  无 live 市场"); time.sleep(args.poll_interval); continue
 
-                print("  当前没有 live 市场")
-
-                time.sleep(args.poll_interval)
-                continue
-
-            # 匹配到期合约
-            matched, exp_ms = match_contract_by_signal_time(
-                markets,
-                closed_ts
-            )
-
+            matched, exp_ms = match_contract_by_signal_time(markets, closed_ts, skip=1)
             if matched is None:
-
-                print("  没有找到匹配的事件合约")
-
-                time.sleep(args.poll_interval)
-                continue
+                print("  无 T+1 轮合约（可能只有 1 个 live 合约）")
+                time.sleep(args.poll_interval); continue
 
             inst_id = matched["instId"]
+            print(f"  合约(T+1轮): {inst_id}, 到期: {dual_str(exp_ms)}")
 
-            print(
-                f"  匹配合约: {inst_id}"
-            )
+            if exp_ms <= now_ms() or matched.get("state") != "live":
+                print("  合约非live/已到期"); time.sleep(args.poll_interval); continue
 
-            print(
-                f"  到期时间: {dual_str(exp_ms)}"
-            )
-
-            print(
-                f"  当前状态: {matched.get('state')}"
-            )
-
-            # 到期时间必须晚于当前时间
-            if exp_ms <= now_ms():
-
-                print("  合约已经到期，取消交易")
-
-                time.sleep(args.poll_interval)
-                continue
-
-            # 再次检查市场状态
-            if matched.get("state") != "live":
-
-                print("  合约不是 live 状态，取消交易")
-
-                time.sleep(args.poll_interval)
-                continue
-
-            contracts = state["stake"]
-
+            contracts = int(state["stake"])
             if contracts <= 0:
-                print("  投注张数为0，跳过")
-                time.sleep(args.poll_interval)
-                continue
+                print("  张数为0"); time.sleep(args.poll_interval); continue
 
             result = None
-
             if not args.live:
-
-                print(
-                    f"  [DRY RUN] "
-                    f"将买入 outcome={outcome}, "
-                    f"sz={contracts} 张"
-                )
-
+                print(f"  [DRY RUN] 将买入 {outcome}, {contracts}张")
             else:
+                print(f"  [LIVE] 买入 {outcome}, {contracts}张")
+                result = place_event_order(inst_id, outcome, contracts)
+                print(f"  <下单成功> ordId={result.get('ordId')}")
 
-                print(
-                    f"  [LIVE] "
-                    f"准备买入 outcome={outcome}, "
-                    f"sz={contracts} 张"
-                )
-
-                result = place_event_order(
-                    inst_id,
-                    outcome,
-                    contracts
-                )
-
-                print(
-                    f"  <下单成功> ordId={result.get('ordId')}"
-                )
-
-                print(
-                    f"  clOrdId={result.get('clOrdId')}"
-                )
-
-                print(
-                    f"  sCode={result.get('sCode')}"
-                )
-
-            # 4) 记录待结算（LIVE 与 DRY RUN 都记录）
             state["pending"] = True
             state["last_signal"] = signal
-            state["last_signal_close_ts"] = closed_ts
-            state["last_signal_close_price"] = closed_close
+            state["last_signal_ts"] = closed_ts
             state["last_stake"] = contracts
             save_state(state)
 
-            # 状态日志：下单完成
-            print_status(
-                "ORDER_PLACED",
-                state,
-                {
-                    "instId": inst_id,
-                    "outcome": outcome,
-                    "sz": contracts,
-                    "signal": signal,
-                    "closed_ts": closed_ts,
-                    "ordId": (
-                        result.get("ordId")
-                        if result else "DRY_RUN"
-                    ),
-                }
-            )
+            print_status("已下单", state, {
+                "合约": inst_id,
+                "方向": outcome,
+                "张数": contracts,
+                "信号": signal,
+                "订单号": result.get("ordId") if result else "DRY_RUN",
+            })
 
         except KeyboardInterrupt:
-
-            print("\n用户主动停止程序")
-            break
-
+            print("\n停止"); break
         except Exception as e:
-
-            print(
-                f"\n[{datetime.now().strftime('%H:%M:%S')}] "
-                f"异常: {e}"
-            )
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 异常: {e}")
 
         time.sleep(args.poll_interval)
 
