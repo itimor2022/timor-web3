@@ -2,18 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 OKX 5m 布林线 + 事件倍投回测（买 T+1 轮，固定开仓价 0.52）
-—— T+1 双单并存 + 每笔独立链结算版 + 逆势2连K冷却
+—— T+1 双单并存 + 每笔独立链结算版
 
-本版新增：
-- 中轨上方出现 2 连阴（close<open 连续两根）-> 跳过下一轮投注一次
-- 中轨下方出现 2 连阳（close>open 连续两根）-> 跳过下一轮投注一次
-- 跳过期间：不改 stake、不改 losses/wins、不占槽位、不计投注次数
-- 跳过只触发一次，之后恢复正常信号 + 倍投逻辑
+核心修复：
+- T+1 方案下会同时存在 2 笔未结算订单（T 和 T+1 各一笔）
+- 每笔订单拥有独立的 stake 链（stake / losses / wins）
+- 下单时从「最新活跃链」继承 stake
+- 结算时把结果写回该笔自己的链，不影响其他链
+- 全局连亏只用于统计展示，不参与投注计算
 
-其余规则保持不变：
+连亏统计修复（本版）：
+- 单链最大连亏：在链因 max-losses 重置之前就记录，触顶的那一次不再漏记
+- 全局最大连亏：按下注顺序，不分槽位，LOSS 累加、WIN 清零、PUSH 不变
+- CSV 的 loss_streak_raw 为重置前的连亏数；另增 global_loss_streak 列
+
+规则：
 - 布林线：20周期，2倍标准差
 - 实体完全在中轨上方 -> LONG；完全在中轨下方 -> SHORT；跨/贴中轨 -> 跳过
-- T+1 双单并存，slot 0/1 交替，各自独立 StakeChain
+- --cooldown-after-cross N：穿线那根之后再跳过 N 根K线
 - 固定开仓价 --entry-price 默认 0.52
 - 信号K线 T，结算基准 = T+2 close vs T+1 close
 - 下单张数 = floor(stake / entry_price)，至少 1 张
@@ -21,10 +27,11 @@ OKX 5m 布林线 + 事件倍投回测（买 T+1 轮，固定开仓价 0.52）
 - 盈利：该笔链重置为 base
 - 连亏达到 --max-losses：该笔链重置为 base
 
-输出：TXT 汇总
+输出：CSV 明细 + TXT 汇总
 """
 
 import argparse
+import csv
 import math
 import sys
 import time
@@ -43,7 +50,7 @@ except ImportError:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="OKX 5m 布林倍投单日回测（买T+1轮，固定开仓价，双单并存独立链，逆势2连K冷却）")
+    p = argparse.ArgumentParser(description="OKX 5m 布林倍投单日回测（买T+1轮，固定开仓价，双单并存独立链）")
     p.add_argument("--date",
                    default=(datetime.now(LOCAL_TZ) - timedelta(days=1)).strftime("%Y-%m-%d"),
                    help="回测日期，柬埔寨时间，格式 YYYY-MM-DD；默认昨天")
@@ -52,7 +59,7 @@ def parse_args():
     p.add_argument("--period", type=int, default=20, help="布林线周期，默认 20")
     p.add_argument("--std", type=float, default=2.0, help="布林线标准差倍数，默认 2.0")
 
-    p.add_argument("--base", type=float, default=10.0, help="基础投注金额（USDT），默认 10")
+    p.add_argument("--base", type=float, default=10.0, help="基础投注金额（USDT），默认 1")
     p.add_argument("--entry-price", type=float, default=0.52,
                    help="固定开仓价（0~1），默认 0.52")
     p.add_argument("--max-losses", type=int, default=10,
@@ -121,6 +128,7 @@ def compute_boll(df, period, std_mult):
     df["std"] = df["close"].rolling(period).std(ddof=0)
     df["upper"] = df["middle"] + std_mult * df["std"]
     df["lower"] = df["middle"] - std_mult * df["std"]
+    df["middle_prev"] = df["middle"].shift(1)
     return df
 
 
@@ -145,33 +153,6 @@ def boll_signal(row):
     return None, False
 
 
-def is_yin(row):
-    return float(row["close"]) < float(row["open"])
-
-
-def is_yang(row):
-    return float(row["close"]) > float(row["open"])
-
-
-def counter_trend_two_candle(df, i, signal):
-    """
-    判断第 i 根信号 K 线是否构成“逆势 2 连 K”。
-    - signal == LONG（中轨上方）：看最近两根是否 2 连阴
-    - signal == SHORT（中轨下方）：看最近两根是否 2 连阳
-    返回 True 表示应跳过下一轮投注
-    """
-    if i < 1:
-        return False
-    prev = df.iloc[i - 1]
-    cur = df.iloc[i]
-
-    if signal == "LONG":
-        return is_yin(prev) and is_yin(cur)
-    if signal == "SHORT":
-        return is_yang(prev) and is_yang(cur)
-    return False
-
-
 def stake_to_contracts(stake_amount, entry_price):
     if stake_amount <= 0:
         return 0
@@ -192,6 +173,10 @@ class StakeChain:
         self.stake = base_stake
 
     def on_loss(self, base_stake, max_losses):
+        """
+        返回本次亏损后、重置之前的连亏数（peak），供统计使用。
+        链触达 max_losses 时 self.losses 会被清零，所以统计必须用返回值。
+        """
         self.losses += 1
         self.wins = 0
         streak_before_reset = self.losses
@@ -203,6 +188,7 @@ class StakeChain:
         return streak_before_reset
 
     def on_push(self):
+        # 平局不动链
         pass
 
 
@@ -212,14 +198,16 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
     rows = []
     ep = args.entry_price
 
+    # 槽位 A / B 交替使用，各自维护自己的 StakeChain
     chains = [StakeChain(args.base), StakeChain(args.base)]
     slot_use_count = [0, 0]
 
-    max_chain_loss_streak = 0
-    max_chain_loss_streak_per_slot = [0, 0]
-    chain_reset_count = [0, 0]
-    global_loss_streak = 0
-    max_global_loss_streak = 0
+    # 全局汇总
+    max_chain_loss_streak = 0                       # 单链最大连亏（重置前口径）
+    max_chain_loss_streak_per_slot = [0, 0]         # 各槽位最大连亏
+    chain_reset_count = [0, 0]                      # 各槽位因触顶重置的次数
+    global_loss_streak = 0                          # 全局当前连亏（按下注顺序）
+    max_global_loss_streak = 0                      # 全局最大连亏
     max_win_streak = 0
     max_single_stake = 0.0
     max_single_contracts = 0
@@ -234,10 +222,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
     cooldown_skipped = 0
     skipped_na = 0
     cooldown_left = 0
-
-    # 新增：逆势2连K冷却
-    counter_trend_skipped = 0
-    pending_skip = 0          # >0 表示下一次命中信号时要跳过的次数
 
     for i in range(0, len(df) - 2):
         signal_candle = df.iloc[i]
@@ -269,19 +253,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
 
         signal = sig
 
-        # === 逆势2连K检查：命中则设置 pending_skip，跳过下一轮 ===
-        if counter_trend_two_candle(df, i, signal):
-            pending_skip = 1
-            counter_trend_skipped += 1
-            # 注意：这里不改变链状态，也不占用槽位，只标记下一轮跳过
-            continue
-
-        # === 若存在待跳过标记，跳过本轮，清掉标记 ===
-        if pending_skip > 0:
-            pending_skip -= 1
-            counter_trend_skipped += 1
-            continue
-
         t1_close = float(t1_candle["close"])
         t2_close = float(t2_candle["close"])
 
@@ -293,6 +264,8 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             outcome = "PUSH"
 
         bet_no += 1
+
+        # === 选择槽位：T+1 双单交替，slot 0 / slot 1 轮流 ===
         slot_idx = bet_no % 2
         chain = chains[slot_idx]
         slot_use_count[slot_idx] += 1
@@ -308,6 +281,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         fee = cost * args.fee
         total_fee += fee
 
+        # 记录链结算前状态，用于 CSV
         chain_losses_before = chain.losses
         chain_wins_before = chain.wins
 
@@ -319,6 +293,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             chain.on_push()
             loss_streak_raw = chain.losses
             win_streak_raw = chain.wins
+            # 平局：全局连亏不变
         else:
             won = (signal == "LONG" and outcome == "UP") or (signal == "SHORT" and outcome == "DOWN")
             if won:
@@ -336,6 +311,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
                 gross_pnl = -cost
                 net_pnl = gross_pnl - fee
                 losses += 1
+                # 用 on_loss 返回的「重置前连亏数」统计，触顶那次不再漏记
                 streak_peak = chain.on_loss(args.base, args.max_losses)
                 if streak_peak >= args.max_losses:
                     chain_reset_count[slot_idx] += 1
@@ -382,6 +358,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
             "cumulative_pnl": money(total_pnl),
         })
 
+    # 链结束状态
     ending_stakes = {f"slot_{i}": money(c.stake) for i, c in enumerate(chains)}
 
     summary = {
@@ -395,7 +372,7 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         "max_consecutive_losses_param": args.max_losses,
         "fee_rate": args.fee,
         "cooldown_after_cross": args.cooldown_after_cross,
-        "settle_mode": "dual_slot_independent_chain_counter_trend_skip",
+        "settle_mode": "dual_slot_independent_chain",
         "bets": len(rows),
         "wins": wins,
         "losses": losses,
@@ -417,7 +394,6 @@ def run_backtest(df, args, day_start_ms, day_end_ms):
         "crossed_candles_skipped": crossed_skipped,
         "cooldown_candles_skipped": cooldown_skipped,
         "skipped_indicator_nan": skipped_na,
-        "counter_trend_skipped": counter_trend_skipped,
         "settle_basis": "T+2 close vs T+1 close",
     }
     return rows, summary
@@ -448,8 +424,20 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     safe_symbol = args.symbol.replace("/", "_").replace(":", "_")
-    stem = f"5m_boll_t1_ctskip_{safe_symbol}_{args.date}"
+    stem = f"boll_t1_2_{safe_symbol}_{args.date}"
+
+    # csv_path = outdir / f"{stem}.csv"
     txt_path = outdir / f"{stem}.txt"
+
+    # fieldnames = list(rows[0].keys()) if rows else [
+    #     "bet_no", "slot", "signal_time_local", "settle_time_local", "symbol", "signal",
+    #     "stake_this_bet", "contracts", "cost", "result", "net_pnl",
+    #     "chain_losses_after", "global_loss_streak", "next_stake_amount", "cumulative_pnl"
+    # ]
+    # with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+    #     writer = csv.DictWriter(f, fieldnames=fieldnames)
+    #     writer.writeheader()
+    #     writer.writerows(rows)
 
     summary_cn = {
         "回测日期": summary["date_local"],
@@ -485,24 +473,24 @@ def main():
         "穿线K线跳过数": summary["crossed_candles_skipped"],
         "冷静期跳过K线数": summary["cooldown_candles_skipped"],
         "指标预热期跳过数": summary["skipped_indicator_nan"],
-        "逆势2连K跳过次数": summary["counter_trend_skipped"],
     }
 
     with txt_path.open("w", encoding="utf-8-sig") as f:
-        f.write("OKX 5m 布林倍投回测汇总（买T+1轮，固定开仓价，T+1双单并存独立链，逆势2连K冷却）\n")
+        f.write("OKX 5m 布林倍投回测汇总（买T+1轮，固定开仓价，T+1双单并存独立链）\n")
         f.write("=" * 58 + "\n")
         for key, value in summary_cn.items():
             f.write(f"{key}：{value}\n")
         f.write("\n说明：T+1 方案下同时存在 2 笔未结算订单，\n")
         f.write("回测用两个独立 StakeChain 槽位模拟，各自独立翻倍、独立连亏计数。\n")
-        f.write("逆势2连K冷却：中轨上方出现2连阴 / 中轨下方出现2连阳时，\n")
-        f.write("跳过下一轮投注一次，连亏计数与 stake 保持不变，之后恢复倍投。\n")
+        f.write("全局连亏按下注顺序统计（LOSS 累加、WIN 清零、PUSH 不变），仅用于展示。\n")
+        f.write("本回测使用普通5mK线模拟涨跌，不代表OKX特定事件的真实结算结果。\n")
         f.write("结算基准：T+2 close vs T+1 close（对应 T+1 轮合约到期区间）。\n")
         f.write(f"开仓价固定 {summary['entry_price']}，每张赢净赚 {summary['win_net_per_contract']}。\n")
 
     print("\n回测完成")
     for k, v in summary.items():
         print(f"{k}: {v}")
+    # print(f"\n投注明细：{csv_path.resolve()}")
     print(f"汇总文件：{txt_path.resolve()}")
 
 
