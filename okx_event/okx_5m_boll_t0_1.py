@@ -10,7 +10,11 @@ UTC + 北京时间双显示版
 1. 已收盘5分钟K线 T
 2. 实体完全在布林中轨上方 -> UP -> YES
 3. 实体完全在布林中轨下方 -> DOWN -> NO
-4. 实体穿越或触碰中轨 -> 不交易
+4. 实体穿越或触碰中轨 -> 看穿越前连续K线：
+   - 连阳（close>open）根数 >= streak-min -> 看多 UP
+   - 连阴（close<open）根数 >= streak-min -> 看空 DOWN
+   - 否则不交易
+   （连阳/连阴从 T-1 向前数，不含 T 本身）
 
 T+0 限价轮询模式：
 - 信号来自 T，下单目标是 expTime > T+5min 的**第一个**合约（到期 T+5min）
@@ -27,12 +31,10 @@ T+0 限价轮询模式：
 - 上一笔结算完成后，才允许下一笔下单
 - 单链连亏达到 --max-losses 时，链重置为 base
 
-翻倍规则（新）：
-- 亏损时查询上笔订单的**实际亏损金额** actual_loss
-- 实际亏损小数向上补整为整数 loss_int = ceil(actual_loss)
-- 下一笔 stake = loss_int * 2 + base
-- 若实际亏损暂时查不到，保留 pending 等下一轮再结算（不推进链）
-- 若最终仍查不到（超过 --pnl-giveup 秒），回退旧公式 stake*2+base
+翻倍规则：
+- 亏损时：下一笔 stake = 上笔张数 * 2 + base
+- 上笔张数取 filled_contracts（实际成交张数），无则取下单张数
+- 连亏达到 max-losses 时链重置为 base
 
 结算（T+0）：
 - T+1 close vs T close（近似）
@@ -50,7 +52,6 @@ import hashlib
 import hmac
 import base64
 import json
-import math
 import os
 import sys
 import time
@@ -99,11 +100,11 @@ def chain_on_win(chain, base_stake):
     chain["stake"] = float(base_stake)
 
 
-def chain_on_loss(chain, base_stake, max_losses, actual_loss=None):
+def chain_on_loss(chain, base_stake, max_losses, last_contracts=None):
     """
-    actual_loss: 本笔实际亏损金额（正数）。
-                 - 若提供：先向上取整为整数，再 stake = ceil(actual_loss)*2 + base
-                 - 否则回退旧公式 stake*2+base
+    last_contracts: 上笔下单/成交张数（整数）。
+                    若提供：stake = last_contracts*2 + base
+                    否则回退：stake = stake*2 + base
     """
     chain["losses"] += 1
     chain["wins"] = 0
@@ -112,9 +113,8 @@ def chain_on_loss(chain, base_stake, max_losses, actual_loss=None):
         chain["losses"] = 0
         chain["stake"] = float(base_stake)
     else:
-        if actual_loss is not None and actual_loss > 0:
-            loss_int = math.ceil(actual_loss)          # 小数亏损向上补成整数
-            chain["stake"] = loss_int * 2 + float(base_stake)
+        if last_contracts is not None and last_contracts > 0:
+            chain["stake"] = float(last_contracts * 2 + base_stake)
         else:
             chain["stake"] = chain["stake"] * 2 + float(base_stake)
     return peak
@@ -266,54 +266,32 @@ def get_event_order(inst_id, ord_id):
     return data[0]
 
 
-def get_order_realized_pnl(inst_id, ord_id):
-    """
-    查询某笔事件合约订单的实际盈亏（已结算后）。
-    优先用 /api/v5/trade/fills 的 fillPnl；
-    回退到 /api/v5/account/bills 按 instId 过滤的 pnl。
-    返回 float（赢为正、输为负）；查不到返回 None。
-    """
-    # 方式 A: 成交明细 fillPnl
-    try:
-        path = f"/api/v5/trade/fills?instId={inst_id}&ordId={ord_id}"
-        data = _request("GET", path).get("data", [])
-        if data:
-            total = 0.0
-            got = False
-            for f in data:
-                pnl = f.get("fillPnl")
-                if pnl not in (None, ""):
-                    total += float(pnl)
-                    got = True
-            if got:
-                return total
-    except Exception as e:
-        print(f"  [查fillPnl异常] {e}")
-
-    # 方式 B: 账单流水 pnl（事件合约结算通常记在这里）
-    # 注意：instType 视 OKX 归口而定，若不匹配可去掉 instType 只按 instId 过滤
-    for inst_type in ("SPOT", "FUTURES", "SWAP", ""):
-        try:
-            q = f"/api/v5/account/bills?instId={inst_id}&limit=50"
-            if inst_type:
-                q += f"&instType={inst_type}"
-            path = q
-            data = _request("GET", path).get("data", [])
-            for b in data:
-                if b.get("ordId") == ord_id and b.get("pnl") not in (None, ""):
-                    return float(b["pnl"])
-        except Exception:
-            # instType 不合法会报错，静默尝试下一个
-            continue
-
-    return None
-
-
 # ============================================================
 # 布林信号
 # ============================================================
 
-def get_boll_signal(exchange, symbol, period, std_mult):
+def _count_streak(df, end_idx, direction):
+    """
+    从 end_idx 向前数连续同向K线根数（从 end_idx-1 开始数，不含 end_idx 本身）。
+    direction="up": close > open；"down": close < open。
+    返回连续根数。
+    """
+    cnt = 0
+    i = end_idx - 1
+    while i >= 0:
+        o = float(df.iloc[i]["o"])
+        c = float(df.iloc[i]["c"])
+        if direction == "up" and c > o:
+            cnt += 1
+        elif direction == "down" and c < o:
+            cnt += 1
+        else:
+            break
+        i -= 1
+    return cnt
+
+
+def get_boll_signal(exchange, symbol, period, std_mult, streak_min=2):
     limit = max(period + 30, 100)
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=limit)
     if len(ohlcv) < period + 2:
@@ -331,10 +309,24 @@ def get_boll_signal(exchange, symbol, period, std_mult):
     body_low = min(float(row["o"]), float(row["c"]))
     body_high = max(float(row["o"]), float(row["c"]))
     middle = float(row["middle"])
+
+    # 实体完全在中轨上方 / 下方：原逻辑
     if body_low > middle:
         return "UP", closed_ts, closed_close
     elif body_high < middle:
         return "DOWN", closed_ts, closed_close
+
+    # 实体穿越或触碰中轨：看穿越前是否连阳/连阴
+    up_streak = _count_streak(df, idx, "up")
+    down_streak = _count_streak(df, idx, "down")
+    if up_streak >= streak_min and up_streak >= down_streak:
+        print(f"  [穿越中轨] 连阳 {up_streak} 根 -> 看多")
+        return "UP", closed_ts, closed_close
+    if down_streak >= streak_min and down_streak > up_streak:
+        print(f"  [穿越中轨] 连阴 {down_streak} 根 -> 看空")
+        return "DOWN", closed_ts, closed_close
+
+    # 无连阳也无连阴（或连数不足）：不交易
     return None, closed_ts, closed_close
 
 
@@ -457,15 +449,12 @@ def _find_idx(klines, target_ts):
     return None
 
 
-def settle_pending_orders(state, exchange, symbol, base_stake, max_losses, pnl_giveup_sec=300):
+def settle_pending_orders(state, exchange, symbol, base_stake, max_losses):
     """
     只结算已成交（_filled 或 _dry_filled）的订单。
     未成交的订单由 poll_order_fill 处理。
 
-    亏损时查询实际亏损 actual_loss：
-    - 查到：小数向上补整 loss_int = ceil(actual_loss)，stake = loss_int*2 + base
-    - 查不到：若等待未超 pnl_giveup_sec，保留 pending 下轮再试
-              若超时，回退旧公式 stake*2+base
+    亏损时：下一笔 stake = 上笔张数 * 2 + base
     """
     if not state["pending_orders"]:
         return
@@ -515,28 +504,10 @@ def settle_pending_orders(state, exchange, symbol, base_stake, max_losses, pnl_g
         chain_on_win(chain, base_stake)
         result_str = "WIN"
     else:
-        actual_loss = None
-        # 只有真实下单（非 dry run）才去查实际亏损
-        if order.get("ord_id") and order.get("ord_id") != "DRY_RUN":
-            actual_loss = get_order_realized_pnl(order["inst_id"], order["ord_id"])
-            if actual_loss is not None:
-                actual_loss = abs(actual_loss)  # 亏损取正数
-                loss_int = math.ceil(actual_loss)  # 小数向上补整
-                print(f"  实际亏损={actual_loss:.4f} -> 补整={loss_int}，下一笔 stake = {loss_int}*2 + {base_stake}")
-            else:
-                # 实际盈亏尚未入账：未超等待上限则保留 pending，下轮再结算
-                if not order.get("settle_first_try_ms"):
-                    order["settle_first_try_ms"] = now_ms()
-                wait_ms = now_ms() - int(order.get("settle_first_try_ms", now_ms()))
-                if wait_ms < pnl_giveup_sec * 1000:
-                    print(f"  [等待] 实际盈亏尚未入账（已等 {wait_ms//1000}s），下轮再结算")
-                    save_state(state)
-                    return  # 不推进链、不清空 pending
-                else:
-                    print(f"  [警告] 等待实际盈亏超 {pnl_giveup_sec}s，回退 stake*2+base")
-
-        peak = chain_on_loss(chain, base_stake, max_losses, actual_loss=actual_loss)
+        last_contracts = int(order.get("filled_contracts") or order["contracts"])
+        peak = chain_on_loss(chain, base_stake, max_losses, last_contracts=last_contracts)
         result_str = "LOSS"
+        print(f"  上笔张数={last_contracts}，下一笔 stake = {last_contracts}*2 + {base_stake}")
         if peak >= max_losses:
             print(f"  连亏 {peak} 次触顶，链重置为 base={base_stake}")
         else:
@@ -644,8 +615,8 @@ def main():
     parser.add_argument("--limit-price", type=float, default=0.77)
     parser.add_argument("--check-interval", type=int, default=10, help="轮询间隔秒数，默认10")
     parser.add_argument("--timeout", type=int, default=30, help="限价单超时秒数，默认30")
-    parser.add_argument("--pnl-giveup", type=int, default=300,
-                        help="查询实际亏损的最长等待秒数，超时回退旧公式，默认300")
+    parser.add_argument("--streak-min", type=int, default=2,
+                        help="穿越中轨时，判定连阳/连阴所需的最少连续根数，默认2")
     parser.add_argument("--up-outcome", choices=["yes", "no"], default="yes")
     parser.add_argument("--down-outcome", choices=["yes", "no"], default="no")
     parser.add_argument("--live", action="store_true")
@@ -657,17 +628,17 @@ def main():
     if not (0.01 <= args.limit_price <= 0.99): sys.exit("limit-price 0.01~0.99")
     if args.check_interval < 1: sys.exit("check-interval>=1")
     if args.timeout < 10: sys.exit("timeout>=10")
-    if args.pnl_giveup < 10: sys.exit("pnl-giveup>=10")
+    if args.streak_min < 1: sys.exit("streak-min>=1")
     if args.live and not all([API_KEY, SECRET_KEY, PASSPHRASE]):
         sys.exit("LIVE需要API密钥")
 
     # 启动前清空状态文件，从全新状态开始
-    if STATE_FILE.exists():
-        try:
-            STATE_FILE.unlink()
-            print(f"[启动] 已清空状态文件: {STATE_FILE}")
-        except Exception as e:
-            print(f"[启动] 清空状态文件失败: {e}")
+    # if STATE_FILE.exists():
+    #     try:
+    #         STATE_FILE.unlink()
+    #         print(f"[启动] 已清空状态文件: {STATE_FILE}")
+    #     except Exception as e:
+    #         print(f"[启动] 清空状态文件失败: {e}")
 
     # ccxt 仅用于公开行情（K线），补上凭据避免误用私有接口时报错
     exchange = ccxt.okx({
@@ -683,12 +654,13 @@ def main():
     print(f"模式: {'LIVE' if args.live else 'DRY RUN'}")
     print(f"系列: {args.series_id}, 品种: {args.symbol}")
     print(f"布林: 周期={args.period}, 标准差={args.std}")
+    print(f"穿越中轨: 连阳/连阴 >= {args.streak_min} 根才判方向")
     print(f"基础投注: {args.base}, 限价: {args.limit_price}")
     print(f"单链: stake={state['chain']['stake']:.2f}, L={state['chain']['losses']}, W={state['chain']['wins']}")
     print(f"待结算: {len(state['pending_orders'])}（最多 1 笔）")
     print(f"连亏重置: {args.max_losses}, 单笔上限: {args.max_stake}")
     print(f"限价轮询: 每 {args.check_interval}s 查一次，{args.timeout}s 未成交撤单，成交后停止轮询")
-    print(f"翻倍规则: ceil(实际亏损)*2+base（最多等 {args.pnl_giveup}s 入账）")
+    print(f"翻倍规则: 上笔张数*2+base，连亏{args.max_losses}次重置")
     print("=" * 65)
 
     while True:
@@ -697,8 +669,7 @@ def main():
             poll_order_fill(state, exchange, args.symbol)
 
             # 2) 结算已成交且 T+1 已收盘的订单
-            settle_pending_orders(state, exchange, args.symbol, args.base, args.max_losses,
-                                  pnl_giveup_sec=args.pnl_giveup)
+            settle_pending_orders(state, exchange, args.symbol, args.base, args.max_losses)
 
             # 3) 仍有 pending（挂单中或等待结算）-> 不下新单
             if state["pending_orders"]:
@@ -713,7 +684,9 @@ def main():
                 continue
 
             # 5) 信号
-            signal, closed_ts, closed_close = get_boll_signal(exchange, args.symbol, args.period, args.std)
+            signal, closed_ts, closed_close = get_boll_signal(
+                exchange, args.symbol, args.period, args.std, streak_min=args.streak_min
+            )
             if not closed_ts:
                 time.sleep(args.poll_interval)
                 continue
