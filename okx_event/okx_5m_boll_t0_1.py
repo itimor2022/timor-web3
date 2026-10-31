@@ -545,6 +545,14 @@ def main():
     if args.live and not all([API_KEY, SECRET_KEY, PASSPHRASE]):
         sys.exit("LIVE需要API密钥")
 
+    # 启动前清空状态文件，从全新状态开始
+    if STATE_FILE.exists():
+        try:
+            STATE_FILE.unlink()
+            print(f"[启动] 已清空状态文件: {STATE_FILE}")
+        except Exception as e:
+            print(f"[启动] 清空状态文件失败: {e}")
+            
     exchange = ccxt.okx({"enableRateLimit": True})
     state = load_state(args.base)
 
