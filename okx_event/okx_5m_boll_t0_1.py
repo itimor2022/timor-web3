@@ -10,11 +10,7 @@ UTC + 北京时间双显示版
 1. 已收盘5分钟K线 T
 2. 实体完全在布林中轨上方 -> UP -> YES
 3. 实体完全在布林中轨下方 -> DOWN -> NO
-4. 实体穿越或触碰中轨 -> 看穿越前连续K线：
-   - 连阳（close>open）根数 >= streak-min -> 看多 UP
-   - 连阴（close<open）根数 >= streak-min -> 看空 DOWN
-   - 否则不交易
-   （连阳/连阴从 T-1 向前数，不含 T 本身）
+4. 实体穿越或触碰中轨 -> 不交易
 
 T+0 限价轮询模式：
 - 信号来自 T，下单目标是 expTime > T+5min 的**第一个**合约（到期 T+5min）
@@ -270,28 +266,7 @@ def get_event_order(inst_id, ord_id):
 # 布林信号
 # ============================================================
 
-def _count_streak(df, end_idx, direction):
-    """
-    从 end_idx 向前数连续同向K线根数（从 end_idx-1 开始数，不含 end_idx 本身）。
-    direction="up": close > open；"down": close < open。
-    返回连续根数。
-    """
-    cnt = 0
-    i = end_idx - 1
-    while i >= 0:
-        o = float(df.iloc[i]["o"])
-        c = float(df.iloc[i]["c"])
-        if direction == "up" and c > o:
-            cnt += 1
-        elif direction == "down" and c < o:
-            cnt += 1
-        else:
-            break
-        i -= 1
-    return cnt
-
-
-def get_boll_signal(exchange, symbol, period, std_mult, streak_min=2):
+def get_boll_signal(exchange, symbol, period, std_mult):
     limit = max(period + 30, 100)
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=limit)
     if len(ohlcv) < period + 2:
@@ -310,23 +285,13 @@ def get_boll_signal(exchange, symbol, period, std_mult, streak_min=2):
     body_high = max(float(row["o"]), float(row["c"]))
     middle = float(row["middle"])
 
-    # 实体完全在中轨上方 / 下方：原逻辑
+    # 实体完全在中轨上方 -> UP
     if body_low > middle:
         return "UP", closed_ts, closed_close
+    # 实体完全在中轨下方 -> DOWN
     elif body_high < middle:
         return "DOWN", closed_ts, closed_close
-
-    # 实体穿越或触碰中轨：看穿越前是否连阳/连阴
-    up_streak = _count_streak(df, idx, "up")
-    down_streak = _count_streak(df, idx, "down")
-    if up_streak >= streak_min and up_streak >= down_streak:
-        print(f"  [穿越中轨] 连阳 {up_streak} 根 -> 看多")
-        return "UP", closed_ts, closed_close
-    if down_streak >= streak_min and down_streak > up_streak:
-        print(f"  [穿越中轨] 连阴 {down_streak} 根 -> 看空")
-        return "DOWN", closed_ts, closed_close
-
-    # 无连阳也无连阴（或连数不足）：不交易
+    # 实体穿越或触碰中轨 -> 不交易
     return None, closed_ts, closed_close
 
 
@@ -615,8 +580,6 @@ def main():
     parser.add_argument("--limit-price", type=float, default=0.77)
     parser.add_argument("--check-interval", type=int, default=10, help="轮询间隔秒数，默认10")
     parser.add_argument("--timeout", type=int, default=30, help="限价单超时秒数，默认30")
-    parser.add_argument("--streak-min", type=int, default=2,
-                        help="穿越中轨时，判定连阳/连阴所需的最少连续根数，默认2")
     parser.add_argument("--up-outcome", choices=["yes", "no"], default="yes")
     parser.add_argument("--down-outcome", choices=["yes", "no"], default="no")
     parser.add_argument("--live", action="store_true")
@@ -628,17 +591,16 @@ def main():
     if not (0.01 <= args.limit_price <= 0.99): sys.exit("limit-price 0.01~0.99")
     if args.check_interval < 1: sys.exit("check-interval>=1")
     if args.timeout < 10: sys.exit("timeout>=10")
-    if args.streak_min < 1: sys.exit("streak-min>=1")
     if args.live and not all([API_KEY, SECRET_KEY, PASSPHRASE]):
         sys.exit("LIVE需要API密钥")
 
     # 启动前清空状态文件，从全新状态开始
-    # if STATE_FILE.exists():
-    #     try:
-    #         STATE_FILE.unlink()
-    #         print(f"[启动] 已清空状态文件: {STATE_FILE}")
-    #     except Exception as e:
-    #         print(f"[启动] 清空状态文件失败: {e}")
+    if STATE_FILE.exists():
+        try:
+            STATE_FILE.unlink()
+            print(f"[启动] 已清空状态文件: {STATE_FILE}")
+        except Exception as e:
+            print(f"[启动] 清空状态文件失败: {e}")
 
     # ccxt 仅用于公开行情（K线），补上凭据避免误用私有接口时报错
     exchange = ccxt.okx({
@@ -654,7 +616,6 @@ def main():
     print(f"模式: {'LIVE' if args.live else 'DRY RUN'}")
     print(f"系列: {args.series_id}, 品种: {args.symbol}")
     print(f"布林: 周期={args.period}, 标准差={args.std}")
-    print(f"穿越中轨: 连阳/连阴 >= {args.streak_min} 根才判方向")
     print(f"基础投注: {args.base}, 限价: {args.limit_price}")
     print(f"单链: stake={state['chain']['stake']:.2f}, L={state['chain']['losses']}, W={state['chain']['wins']}")
     print(f"待结算: {len(state['pending_orders'])}（最多 1 笔）")
@@ -684,9 +645,7 @@ def main():
                 continue
 
             # 5) 信号
-            signal, closed_ts, closed_close = get_boll_signal(
-                exchange, args.symbol, args.period, args.std, streak_min=args.streak_min
-            )
+            signal, closed_ts, closed_close = get_boll_signal(exchange, args.symbol, args.period, args.std)
             if not closed_ts:
                 time.sleep(args.poll_interval)
                 continue
@@ -698,7 +657,7 @@ def main():
             save_state(state)
 
             if signal is None:
-                print(f"[{dual_str(closed_ts)}] 无信号")
+                print(f"[{dual_str(closed_ts)}] 无信号（穿越/触碰中轨或数据不足）")
                 time.sleep(args.poll_interval)
                 continue
 
