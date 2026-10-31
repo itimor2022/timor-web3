@@ -60,7 +60,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = "https://www.okx.com"
-STATE_FILE = Path(__file__).resolve().parent / "event_trade_state.json"
+STATE_FILE = Path(__file__).resolve().parent / "5m_boll_t1_2_state.json"
 
 API_KEY = os.getenv("OKX_API_KEY", "")
 SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
