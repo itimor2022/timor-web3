@@ -529,7 +529,7 @@ def main():
     parser.add_argument("--max-losses", type=int, default=10)
     parser.add_argument("--max-stake", type=float, default=1000.0)
     parser.add_argument("--limit-price", type=float, default=0.66)
-    parser.add_argument("--check-interval", type=int, default=10, help="轮询间隔秒数，默认10")
+    parser.add_argument("--check-interval", type=int, default=30, help="轮询间隔秒数，默认30")
     parser.add_argument("--timeout", type=int, default=180, help="限价单超时秒数，默认180（3分钟）")
     parser.add_argument("--up-outcome", choices=["yes", "no"], default="yes")
     parser.add_argument("--down-outcome", choices=["yes", "no"], default="no")
