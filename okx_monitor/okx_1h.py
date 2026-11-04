@@ -71,7 +71,7 @@ STATE_FILE = "okx_1h_state.json"
 
 # Telegram 配置从环境变量读取
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_1H_CHAT_ID", "").strip()
 
 BASE_URL = (
     f"https://api.telegram.org/bot{TOKEN}"
@@ -831,7 +831,7 @@ def debug_volume(
     target_start = pd.Timestamp(target_date)
 
     target_end = (
-        target_start + pd.Timedelta(days=1)
+        target_start + pd.Timedelta(minutes=15)
     )
 
     print(f"\n=== {symbol_name} 数据诊断 ===")
