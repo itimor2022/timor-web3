@@ -1283,5 +1283,5 @@ def main():
 
 
 if __name__ == "__main__":
-    send_message("OKX 1H 策略启动成功")
-    # main()
+    # send_message("OKX 1H 策略启动成功")
+    main()
