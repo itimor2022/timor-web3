@@ -605,35 +605,6 @@ def scan_date(
 
             total_volume += 1
 
-    # ------------------------------
-    # 涨跌幅信号扫描
-    # ------------------------------
-
-    for i in range(5, len(df)):
-
-        k0 = df.iloc[i]
-
-        if not (
-            target_start <= k0["ts"] < target_end
-        ):
-            continue
-
-        sub = df.iloc[:i + 1]
-
-        result = detect_amplitude_signal(sub)
-
-        if result:
-
-            text = format_amplitude_signal(
-                k0,
-                result
-            )
-
-            out_lines.append(
-                text + "-" * 30 + "\n"
-            )
-
-            total_amplitude += 1
 
     # ------------------------------
     # 输出文件
@@ -669,9 +640,8 @@ def scan_date(
 
     print(f"成交量信号: {total_volume}")
 
-    print(f"涨跌幅信号: {total_amplitude}")
 
-    print(f"总信号: {total_volume + total_amplitude}")
+    print(f"总信号: {total_volume}")
 
     print(f"结果文件: {log_file}")
 
@@ -849,109 +819,6 @@ def check_volume_latest(df, symbol_name="BTC"):
 
 
 # ============================================================
-# 实时涨跌幅信号
-# ============================================================
-
-def check_amplitude_latest(
-    df,
-    symbol_name="BTC"
-):
-
-    result = detect_amplitude_signal(df)
-
-    if not result:
-
-        print(
-            f"{symbol_name} 最新已收盘K线无涨跌幅信号"
-        )
-
-        return
-
-    k0 = result["k0"]
-
-    now_ts = result["ts"]
-
-    print(
-        f"{symbol_name} 检测到涨跌幅信号 "
-        f"{result['ratio']:.2f}倍"
-    )
-
-    if not allow_signal(
-        "amplitude",
-        symbol_name,
-        now_ts,
-        AMPLITUDE_COOLDOWN
-    ):
-
-        print(
-            f"{symbol_name} 涨跌幅信号已经发送或处于冷却中"
-        )
-
-        return
-
-    ts1 = (
-        k0["ts"] - timedelta(hours=1)
-    ).strftime("%m-%d %H:%M")
-
-    ts2 = k0["ts"].strftime("%m-%d %H:%M")
-
-    msg = f"⚡ {symbol_name} 1H 涨跌幅信号\n"
-
-    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
-
-    msg += f"💰 价格: {k0['close']:,.2f}\n"
-
-    msg += (
-        f"📉 涨跌幅: "
-        f"{result['change_pct']:+.2f}%\n\n"
-    )
-
-    msg += (
-        f"🔥 当前振幅: "
-        f"{result['k0_amplitude']:,.2f}\n"
-    )
-
-    msg += (
-        f"📊 前5根平均振幅: "
-        f"{result['avg_amplitude']:,.2f}\n"
-    )
-
-    msg += (
-        f"⚡ 振幅倍数: "
-        f"{result['ratio']:.2f}x\n\n"
-    )
-
-    msg += (
-        "🔴 条件: 振幅 >= 2倍均值，"
-        "且涨跌幅绝对值 >= 0.6%"
-    )
-
-    if send_message(msg):
-
-        mark_signal_sent(
-            "amplitude",
-            symbol_name,
-            now_ts
-        )
-
-        log_file = (
-            f"{symbol_name}_1h_amplitude_signal.txt"
-        )
-
-        with open(
-            log_file,
-            "a",
-            encoding="utf-8"
-        ) as f:
-
-            f.write(msg + "\n\n")
-
-        print(
-            f"已发送 {symbol_name} 实时涨跌幅信号"
-        )
-
-
-# ============================================================
 # 历史成交量诊断
 # ============================================================
 
@@ -1115,12 +982,6 @@ def run_live(df, symbol_name):
         symbol_name
     )
 
-    # 检测涨跌幅信号
-    check_amplitude_latest(
-        closed_df,
-        symbol_name
-    )
-
     print("\n========== 实时检测完成 ==========")
 
 
@@ -1132,7 +993,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "加密货币 1H 布林 + 成交量 + 涨跌幅信号策略"
+            "加密货币 1H 布林 + 成交量 信号策略"
         ),
         formatter_class=argparse.RawTextHelpFormatter
     )
