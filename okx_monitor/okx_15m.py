@@ -88,18 +88,18 @@ BASE_URL = (
 # ============================================================
 
 SYMBOL_MAP = {
-    "BTC": "BTC-USDT-SWAP",
-    "ETH": "ETH-USDT-SWAP",
-    "SOL": "SOL-USDT-SWAP",
-    "DOGE": "DOGE-USDT-SWAP",
-    "XRP": "XRP-USDT-SWAP",
-    "ADA": "ADA-USDT-SWAP",
-    "DOT": "DOT-USDT-SWAP",
-    "LINK": "LINK-USDT-SWAP",
-    "MATIC": "MATIC-USDT-SWAP",
-    "AVAX": "AVAX-USDT-SWAP",
-    "XAG": "XAG-USDT-SWAP",
-    "XAU": "XAU-USDT-SWAP",
+    "BTC": "BTC-USDT",
+    "ETH": "ETH-USDT",
+    "SOL": "SOL-USDT",
+    "DOGE": "DOGE-USDT",
+    "XRP": "XRP-USDT",
+    "ADA": "ADA-USDT",
+    "DOT": "DOT-USDT",
+    "LINK": "LINK-USDT",
+    "HYPE": "HYPE-USDT",
+    "AVAX": "AVAX-USDT",
+    "XAG": "XAG-USDT",
+    "XAU": "XAU-USDT",
 }
 
 
