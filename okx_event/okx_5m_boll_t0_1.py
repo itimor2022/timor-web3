@@ -574,7 +574,7 @@ def main():
     parser.add_argument("--symbol", default="BTC/USDT")
     parser.add_argument("--period", type=int, default=20)
     parser.add_argument("--std", type=float, default=2.0)
-    parser.add_argument("--base", type=float, default=10.0)
+    parser.add_argument("--base", type=float, default=1.0)
     parser.add_argument("--max-losses", type=int, default=10)
     parser.add_argument("--max-stake", type=float, default=1000.0)
     parser.add_argument("--limit-price", type=float, default=0.77)
