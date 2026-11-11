@@ -65,11 +65,12 @@ BAR_INTERVAL = "15m"
 # 单根K线时长（用于起止时间格式化）
 BAR_DURATION = timedelta(minutes=15)
 
-SIGNAL_COOLDOWN = timedelta(minutes=240)
+VOLUME_COOLDOWN = timedelta(minutes=15)
 
-VOLUME_COOLDOWN = timedelta(minutes=60)
+AMPLITUDE_COOLDOWN = timedelta(minutes=15)
 
-AMPLITUDE_COOLDOWN = timedelta(minutes=60)
+# 成交量激增倍数阈值
+VOLUME_SURGE_RATIO = 3.5
 
 # 状态文件：跨进程记录已经推送的信号
 STATE_FILE = "okx_15m_state.json"
@@ -484,6 +485,44 @@ def detect_amplitude_signal(df):
 
     return None
 
+# ============================================================
+# 成交量激增信号（K0 >= K1 * 3.5）
+# ============================================================
+
+def detect_volume_surge_signal(df):
+    """
+    成交量激增信号：
+
+    K0 >= K1 * 3.5
+
+    K0：当前检测K线
+    K1：前1根
+    """
+
+    if len(df) < 2:
+        return None
+
+    k0 = df.iloc[-1]
+
+    k1 = df.iloc[-2]
+
+    if k1["vol"] <= 0:
+        return None
+
+    ratio = k0["vol"] / k1["vol"]
+
+    if ratio >= VOLUME_SURGE_RATIO:
+
+        return {
+            "k0": k0,
+            "k1": k1,
+            "k0_vol": k0["vol"],
+            "k1_vol": k1["vol"],
+            "ratio": ratio,
+            "ts": k0["ts"]
+        }
+
+    return None
 
 # ============================================================
 # 信号格式化
@@ -511,6 +550,30 @@ def format_volume_signal(k, result):
 
     return text
 
+
+def format_volume_surge_signal(k, result):
+
+    ts1 = (
+        k["ts"] - BAR_DURATION
+    ).strftime("%m-%d %H:%M")
+
+    ts2 = k["ts"].strftime("%m-%d %H:%M")
+
+    text = (
+        f"{ts1} ~ {ts2} | "
+        f"{k['close']:,.2f} | "
+        f"{k['vol']:,.2f} | "
+        f"{k['change_pct']:,.2f}%\n"
+    )
+
+    text += (
+        f" - 成交量激增信号: "
+        f"({result['ratio']:.2f}倍, "
+        f"K0 {result['k0_vol']:,.2f} / "
+        f"K1 {result['k1_vol']:,.2f})\n"
+    )
+
+    return text
 
 def format_amplitude_signal(k, result):
 
@@ -576,7 +639,7 @@ def scan_date(
 
     total_volume = 0
 
-    total_amplitude = 0
+    total_volume_surge = 0
 
     out_lines = []
 
@@ -612,6 +675,36 @@ def scan_date(
 
 
     # ------------------------------
+    # 成交量激增信号扫描（K0 >= K1*3.5）
+    # ------------------------------
+
+    for i in range(1, len(df)):
+
+        k0 = df.iloc[i]
+
+        if not (
+            target_start <= k0["ts"] < target_end
+        ):
+            continue
+
+        sub = df.iloc[:i + 1]
+
+        result = detect_volume_surge_signal(sub)
+
+        if result:
+
+            text = format_volume_surge_signal(
+                k0,
+                result
+            )
+
+            out_lines.append(
+                text + "-" * 30 + "\n"
+            )
+
+            total_volume_surge += 1
+
+    # ------------------------------
     # 输出文件
     # ------------------------------
 
@@ -622,18 +715,12 @@ def scan_date(
     ) as f:
 
         f.write(
-            f"=== {symbol_name} "
-            f"{target_date} 信号汇总 ===\n\n"
-        )
-
-        f.write(
             f"成交量信号数量: {total_volume}\n"
         )
 
         f.write(
-            f"涨跌幅信号数量: {total_amplitude}\n\n"
+            f"成交量激增信号数量: {total_volume_surge}\n\n"
         )
-
         for line in out_lines:
             f.write(line)
 
@@ -645,8 +732,7 @@ def scan_date(
 
     print(f"成交量信号: {total_volume}")
 
-
-    print(f"总信号: {total_volume}")
+    print(f"成交量激增信号: {total_volume_surge}")
 
     print(f"结果文件: {log_file}")
 
@@ -824,6 +910,94 @@ def check_volume_latest(df, symbol_name="BTC"):
 
 
 # ============================================================
+# 实时成交量激增信号（K0 >= K1 * 3.5）
+# ============================================================
+
+def check_volume_surge_latest(df, symbol_name="BTC"):
+
+    result = detect_volume_surge_signal(df)
+
+    if not result:
+
+        print(
+            f"{symbol_name} 最新已收盘K线无成交量激增信号"
+        )
+
+        return
+
+    k0 = result["k0"]
+
+    now_ts = result["ts"]
+
+    print(
+        f"{symbol_name} 检测到成交量激增信号 "
+        f"{result['ratio']:.2f}倍"
+    )
+
+    # 检查冷却
+    if not allow_signal(
+        "volume_surge",
+        symbol_name,
+        now_ts,
+        VOLUME_SURGE_COOLDOWN
+    ):
+
+        print(
+            f"{symbol_name} 成交量激增信号已经发送或处于冷却中"
+        )
+
+        return
+
+    ts1 = (
+        k0["ts"] - BAR_DURATION
+    ).strftime("%m-%d %H:%M")
+
+    ts2 = k0["ts"].strftime("%m-%d %H:%M")
+
+    msg = f"🚨 {symbol_name} 15m 成交量激增信号\n"
+
+    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
+
+    msg += f"💰 价格: {k0['close']:,.2f}\n"
+
+    msg += f"📉 涨跌幅: {k0['change_pct']:,.2f}%\n\n"
+
+    msg += f"🔥 当前成交量: {result['k0_vol']:,.2f}\n"
+
+    msg += f"📊 前1根成交量: {result['k1_vol']:,.2f}\n"
+
+    msg += f"⚡ 激增倍数: {result['ratio']:.2f}x\n\n"
+
+    msg += (
+        f"🔴 条件: K0 >= K1 × {VOLUME_SURGE_RATIO}"
+    )
+
+    # 只有发送成功才记录状态
+    if send_message(msg):
+
+        mark_signal_sent(
+            "volume_surge",
+            symbol_name,
+            now_ts
+        )
+
+        log_file = (
+            f"{symbol_name}_15m_volume_surge_signal.txt"
+        )
+
+        with open(
+            log_file,
+            "a",
+            encoding="utf-8"
+        ) as f:
+
+            f.write(msg + "\n\n")
+
+        print(
+            f"已发送 {symbol_name} 实时成交量激增信号"
+        )
+
+# ============================================================
 # 历史成交量诊断
 # ============================================================
 
@@ -983,6 +1157,12 @@ def run_live(df, symbol_name):
 
     # 检测成交量信号
     check_volume_latest(
+        closed_df,
+        symbol_name
+    )
+
+    # 检测成交量激增信号（K0 >= K1*3.5）
+    check_volume_surge_latest(
         closed_df,
         symbol_name
     )
