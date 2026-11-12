@@ -68,7 +68,6 @@ BAR_DURATION = timedelta(minutes=15)
 VOLUME_COOLDOWN = timedelta(minutes=15)
 
 AMPLITUDE_COOLDOWN = timedelta(minutes=15)
-
 # 成交量激增倍数阈值
 VOLUME_SURGE_RATIO = 3.5
 
@@ -939,7 +938,7 @@ def check_volume_surge_latest(df, symbol_name="BTC"):
         "volume_surge",
         symbol_name,
         now_ts,
-        VOLUME_SURGE_COOLDOWN
+        VOLUME_COOLDOWN
     ):
 
         print(
