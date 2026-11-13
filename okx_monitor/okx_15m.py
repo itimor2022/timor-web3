@@ -91,15 +91,14 @@ SYMBOL_MAP = {
     "BTC": "BTC-USDT",
     "ETH": "ETH-USDT",
     "SOL": "SOL-USDT",
-    "DOGE": "DOGE-USDT",
-    "XRP": "XRP-USDT",
-    "ADA": "ADA-USDT",
-    "DOT": "DOT-USDT",
-    "LINK": "LINK-USDT",
+    "ZEC": "ZEC-USDT",
     "HYPE": "HYPE-USDT",
-    "AVAX": "AVAX-USDT",
-    "XAG": "XAG-USDT",
     "XAU": "XAU-USDT",
+    "XQQQ": "XQQQ-USDT",
+    "XSNDK": "XSNDK-USDT",
+    "XSOXL": "XSOXL-USDT",
+    "XNVDA": "XNVDA-USDT",
+
 }
 
 
