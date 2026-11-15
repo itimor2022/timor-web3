@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -19,26 +18,43 @@
 开启详细诊断：
     python okx_1h.py BTC --debug
 
+自定义成交量信号阈值：
+    python okx_1h.py BTC --live --vol-threshold 1.5
+
+自定义成交量激增阈值：
+    python okx_1h.py BTC --live --surge-ratio 4.0
+
 环境变量：
-    TELEGRAM_BOT_TOKEN
-    TELEGRAM_CHAT_ID
+    TELEGRAM_BOT_TOKEN              必填，bot token
+    TELEGRAM_1H_CHAT_ID_{SYMBOL}    每个交易对独立 Chat ID（优先）
+    TELEGRAM_1H_CHAT_ID             通用 Chat ID（回退）
+
+    例如：
+        TELEGRAM_BOT_TOKEN=xxx
+        TELEGRAM_1H_CHAT_ID=-5264477303
+        # 如某个交易对要单独发到别的群：
+        TELEGRAM_1H_CHAT_ID_BTC=-1001234567890
 
 策略：
     布林：20周期，2倍标准差
-    成交量：K0 >= K2 + K3 + K4
+    成交量：K0 >= (K2 + K3 + K4) × vol_threshold
     成交量冷却：60分钟
+    成交量激增：K0 >= K1 × surge_ratio
     涨跌幅：当前振幅 >= 前5根平均振幅 * 2
     涨跌幅：绝对涨跌幅 >= 0.6%
     涨跌幅冷却：60分钟
+
+日志：
+    自动清理，只保留最近 LOG_RETENTION_DAYS 天
 
 时间：
     北京时间 UTC+8
 """
 
 import os
+import re
 import sys
 import json
-import time
 import argparse
 import traceback
 import requests
@@ -60,23 +76,58 @@ pd.set_option("display.max_colwidth", 1000)
 
 TIMEZONE_OFFSET = 8
 
+# K线周期：1小时
+BAR_INTERVAL = "1H"
+
+# 单根K线时长（用于起止时间格式化）
+BAR_DURATION = timedelta(hours=1)
+
 SIGNAL_COOLDOWN = timedelta(minutes=240)
 
 VOLUME_COOLDOWN = timedelta(minutes=60)
 
 AMPLITUDE_COOLDOWN = timedelta(minutes=60)
 
+# 成交量信号默认阈值：K0 >= (K2+K3+K4) × 阈值
+DEFAULT_VOL_THRESHOLD = 1.0
+
+# 成交量激增倍数阈值：K0 >= K1 × 阈值
+VOLUME_SURGE_RATIO = 3.5
+
+# 日志保留天数
+LOG_RETENTION_DAYS = 3
+
 # 状态文件：跨进程记录已经推送的信号
 STATE_FILE = "okx_1h_state.json"
 
 # Telegram 配置从环境变量读取
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.getenv("TELEGRAM_1H_CHAT_ID", "").strip()
 
 BASE_URL = (
     f"https://api.telegram.org/bot{TOKEN}"
     if TOKEN else ""
 )
+
+
+CHAT_ID_MAP = {
+    "BTC":  "-5068436114",
+    "ETH":  "-5068436114",
+    "SOL":  "-5068436114",
+
+    "XQQQ":  "-4850300375",
+    "XSOXL": "-4850300375",
+    "XSNDK": "-4850300375",
+    "XNVDA": "-4850300375",
+
+    "ZEC":  "-4836241115",
+    "HYPE": "-4836241115",
+    "XAU":  "-4836241115",
+}
+
+
+def get_chat_id(symbol):
+    return CHAT_ID_MAP.get((symbol or "").upper(), "")
+
 
 # ============================================================
 # 交易对映射
@@ -184,23 +235,159 @@ def mark_signal_sent(signal_type, symbol, ts):
 
 
 # ============================================================
+# 日志清理：只保留最近 N 天
+# ============================================================
+
+def cleanup_old_logs(retention_days=LOG_RETENTION_DAYS):
+    """
+    清理日志，只保留最近 retention_days 天。
+
+    处理两类文件：
+    1. 按日期命名的扫描日志：
+       {symbol}_YYYYMMDD_signal.txt
+       -> 文件名日期早于 cutoff 的直接删除
+
+    2. 持续追加的实时日志：
+       {symbol}_1h_volume_signal.txt
+       {symbol}_1h_volume_surge_signal.txt
+       -> 按记录中的时间戳（YYYY-MM-DD HH:MM）过滤，只保留最近 N 天
+    """
+
+    if retention_days <= 0:
+        return
+
+    now = datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)
+    cutoff = now - timedelta(days=retention_days)
+    cutoff_day = cutoff.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    removed_files = 0
+    trimmed_files = 0
+
+    # ---------- 1. 按日期命名的扫描日志 ----------
+    date_pattern = re.compile(r"_(\d{8})_signal\.txt$")
+
+    for name in os.listdir("."):
+        if not name.endswith("_signal.txt"):
+            continue
+        # 跳过实时日志（它们也以 _signal.txt 结尾，但格式不同）
+        if name.endswith("_volume_signal.txt") or name.endswith("_volume_surge_signal.txt"):
+            continue
+
+        m = date_pattern.search(name)
+        if not m:
+            continue
+
+        try:
+            file_date = datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            continue
+
+        if file_date + timedelta(days=1) <= cutoff_day:
+            try:
+                os.remove(name)
+                removed_files += 1
+                print(f"[清理] 删除过期日志: {name}")
+            except Exception as e:
+                print(f"[清理] 删除 {name} 失败: {e}")
+
+    # ---------- 2. 持续追加的实时日志 ----------
+    append_suffixes = (
+        "_1h_volume_signal.txt",
+        "_1h_volume_surge_signal.txt",
+    )
+
+    # 匹配 "⏰ 时间: 2026-11-04 14:00 ~ 2026-11-04 15:00"
+    ts_pattern = re.compile(
+        r"⏰\s*时间:\s*(\d{4})-(\d{2})-(\d{2})\s+\d{2}:\d{2}"
+    )
+
+    for name in os.listdir("."):
+        if not any(name.endswith(s) for s in append_suffixes):
+            continue
+
+        try:
+            with open(name, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"[清理] 读取 {name} 失败: {e}")
+            continue
+
+        blocks = content.split("\n\n")
+        kept_blocks = []
+
+        for block in blocks:
+            if not block.strip():
+                continue
+
+            m = ts_pattern.search(block)
+            if not m:
+                # 无法识别时间的块，保守保留
+                kept_blocks.append(block)
+                continue
+
+            try:
+                block_dt = datetime(
+                    int(m.group(1)),
+                    int(m.group(2)),
+                    int(m.group(3))
+                )
+            except ValueError:
+                kept_blocks.append(block)
+                continue
+
+            if block_dt >= cutoff_day:
+                kept_blocks.append(block)
+
+        new_content = "\n\n".join(kept_blocks)
+        if new_content:
+            new_content += "\n\n"
+
+        if new_content != content:
+            try:
+                temp_file = name + ".tmp"
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                os.replace(temp_file, name)
+                trimmed_files += 1
+                print(f"[清理] 截断过期记录: {name}")
+            except Exception as e:
+                print(f"[清理] 截断 {name} 失败: {e}")
+
+    if removed_files or trimmed_files:
+        print(
+            f"[清理] 完成：删除 {removed_files} 个文件，"
+            f"截断 {trimmed_files} 个文件"
+        )
+
+
+# ============================================================
 # Telegram
 # ============================================================
 
-def send_message(msg):
+def send_message(msg, symbol=None):
     """发送 Telegram 消息"""
 
-    if not TOKEN or not CHAT_ID:
-        print("Telegram 配置缺失，请设置环境变量")
-        print("TELEGRAM_BOT_TOKEN")
-        print("TELEGRAM_CHAT_ID")
+    chat_id = get_chat_id(symbol)
+
+    if not TOKEN or not chat_id:
+        print("Telegram 配置缺失")
+        print("需要环境变量: TELEGRAM_BOT_TOKEN")
+        if symbol:
+            print(
+                f"以及: TELEGRAM_1H_CHAT_ID_{symbol.upper()} "
+                f"或 TELEGRAM_1H_CHAT_ID"
+            )
+        else:
+            print("以及: TELEGRAM_1H_CHAT_ID")
         return False
 
     try:
         response = requests.post(
             f"{BASE_URL}/sendMessage",
             data={
-                "chat_id": CHAT_ID,
+                "chat_id": chat_id,
                 "text": msg
             },
             timeout=15
@@ -231,7 +418,7 @@ def send_message(msg):
 # 获取 OKX K线
 # ============================================================
 
-def get_candles(inst_id="BTC-USDT-SWAP", bar="1H"):
+def get_candles(inst_id="BTC-USDT-SWAP", bar=BAR_INTERVAL):
 
     url = "https://www.okx.com/api/v5/market/candles"
 
@@ -250,9 +437,7 @@ def get_candles(inst_id="BTC-USDT-SWAP", bar="1H"):
     result = response.json()
 
     if result.get("code") != "0":
-        raise RuntimeError(
-            f"OKX接口错误: {result}"
-        )
+        raise RuntimeError(f"OKX接口错误: {result}")
 
     data = result.get("data", [])
 
@@ -283,28 +468,13 @@ def get_candles(inst_id="BTC-USDT-SWAP", bar="1H"):
         + pd.Timedelta(hours=TIMEZONE_OFFSET)
     )
 
-    for col in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "vol"
-    ]:
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
+    for col in ["open", "high", "low", "close", "vol"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["confirm"] = df["confirm"].astype(str)
 
     df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "vol"
-        ]
+        subset=["open", "high", "low", "close", "vol"]
     )
 
     df = (
@@ -314,15 +484,7 @@ def get_candles(inst_id="BTC-USDT-SWAP", bar="1H"):
     )
 
     return df[
-        [
-            "ts",
-            "open",
-            "high",
-            "low",
-            "close",
-            "vol",
-            "confirm"
-        ]
+        ["ts", "open", "high", "low", "close", "vol", "confirm"]
     ]
 
 
@@ -335,20 +497,14 @@ def add_indicators(df):
     df = df.copy()
 
     df["mid"] = df["close"].rolling(20).mean()
-
     df["std"] = df["close"].rolling(20).std()
-
     df["upper"] = df["mid"] + 2 * df["std"]
-
     df["lower"] = df["mid"] - 2 * df["std"]
 
     df["is_bull"] = df["close"] > df["open"]
-
     df["is_bear"] = df["close"] < df["open"]
 
-    df["mid_price"] = (
-        df["close"] + df["open"]
-    ) / 2
+    df["mid_price"] = (df["close"] + df["open"]) / 2
 
     # 涨跌幅
     df["change_pct"] = (
@@ -358,17 +514,11 @@ def add_indicators(df):
     )
 
     # BBQ
-    df["bbq"] = (
-        df["mid_price"] - df["mid"]
-    ).abs()
-
+    df["bbq"] = (df["mid_price"] - df["mid"]).abs()
     df["bbq_min"] = df["bbq"].rolling(7).min()
 
     # EMA
-    df["ema5"] = df["close"].ewm(
-        span=5,
-        adjust=False
-    ).mean()
+    df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
 
     # 振幅
     df["amplitude"] = df["high"] - df["low"]
@@ -380,11 +530,13 @@ def add_indicators(df):
 # 成交量信号
 # ============================================================
 
-def detect_volume_signal(df):
+def detect_volume_signal(df, threshold=DEFAULT_VOL_THRESHOLD):
     """
     成交量信号：
 
-    K0 >= K2 + K3 + K4
+    K0 >= (K2 + K3 + K4) × threshold
+
+    threshold 默认 1.0（即原逻辑 K0 >= K2+K3+K4）
 
     K0：当前检测K线
     K1：前1根
@@ -397,25 +549,19 @@ def detect_volume_signal(df):
         return None
 
     k0 = df.iloc[-1]
-
     k1 = df.iloc[-2]
-
     k2 = df.iloc[-3]
-
     k3 = df.iloc[-4]
-
     k4 = df.iloc[-5]
 
-    sum_vol = (
-        k2["vol"]
-        + k3["vol"]
-        + k4["vol"]
-    )
+    sum_vol = k2["vol"] + k3["vol"] + k4["vol"]
 
     if sum_vol <= 0:
         return None
 
-    if k0["vol"] >= sum_vol:
+    required = sum_vol * threshold
+
+    if k0["vol"] >= required:
 
         ratio = k0["vol"] / sum_vol
 
@@ -427,6 +573,8 @@ def detect_volume_signal(df):
             "k4": k4,
             "k0_vol": k0["vol"],
             "sum_vol": sum_vol,
+            "required": required,
+            "threshold": threshold,
             "ratio": ratio,
             "ts": k0["ts"]
         }
@@ -450,7 +598,6 @@ def detect_amplitude_signal(df):
         return None
 
     k0 = df.iloc[-1]
-
     prev = df.iloc[-6:-1]
 
     avg_amplitude = prev["amplitude"].mean()
@@ -459,9 +606,7 @@ def detect_amplitude_signal(df):
         return None
 
     k0_amplitude = k0["amplitude"]
-
     ratio = k0_amplitude / avg_amplitude
-
     abs_change = abs(k0["change_pct"])
 
     if ratio >= 2.0 and abs_change >= 0.6:
@@ -479,15 +624,54 @@ def detect_amplitude_signal(df):
 
 
 # ============================================================
+# 成交量激增信号（K0 >= K1 * ratio）
+# ============================================================
+
+def detect_volume_surge_signal(df, surge_ratio=VOLUME_SURGE_RATIO):
+    """
+    成交量激增信号：
+
+    K0 >= K1 × surge_ratio
+
+    surge_ratio 默认 3.5
+
+    K0：当前检测K线
+    K1：前1根
+    """
+
+    if len(df) < 2:
+        return None
+
+    k0 = df.iloc[-1]
+    k1 = df.iloc[-2]
+
+    if k1["vol"] <= 0:
+        return None
+
+    ratio = k0["vol"] / k1["vol"]
+
+    if ratio >= surge_ratio:
+
+        return {
+            "k0": k0,
+            "k1": k1,
+            "k0_vol": k0["vol"],
+            "k1_vol": k1["vol"],
+            "ratio": ratio,
+            "surge_ratio": surge_ratio,
+            "ts": k0["ts"]
+        }
+
+    return None
+
+
+# ============================================================
 # 信号格式化
 # ============================================================
 
 def format_volume_signal(k, result):
 
-    ts1 = (
-        k["ts"] - timedelta(hours=1)
-    ).strftime("%m-%d %H:%M")
-
+    ts1 = (k["ts"] - BAR_DURATION).strftime("%m-%d %H:%M")
     ts2 = k["ts"].strftime("%m-%d %H:%M")
 
     text = (
@@ -499,7 +683,30 @@ def format_volume_signal(k, result):
 
     text += (
         f" - 成交量信号: "
-        f"({result['ratio']:.2f}倍)\n"
+        f"({result['ratio']:.2f}倍, "
+        f"阈值 {result['threshold']:.2f}x)\n"
+    )
+
+    return text
+
+
+def format_volume_surge_signal(k, result):
+
+    ts1 = (k["ts"] - BAR_DURATION).strftime("%m-%d %H:%M")
+    ts2 = k["ts"].strftime("%m-%d %H:%M")
+
+    text = (
+        f"{ts1} ~ {ts2} | "
+        f"{k['close']:,.2f} | "
+        f"{k['vol']:,.2f} | "
+        f"{k['change_pct']:,.2f}%\n"
+    )
+
+    text += (
+        f" - 成交量激增信号: "
+        f"({result['ratio']:.2f}倍, "
+        f"K0 {result['k0_vol']:,.2f} / "
+        f"K1 {result['k1_vol']:,.2f})\n"
     )
 
     return text
@@ -507,10 +714,7 @@ def format_volume_signal(k, result):
 
 def format_amplitude_signal(k, result):
 
-    ts1 = (
-        k["ts"] - timedelta(hours=1)
-    ).strftime("%m-%d %H:%M")
-
+    ts1 = (k["ts"] - BAR_DURATION).strftime("%m-%d %H:%M")
     ts2 = k["ts"].strftime("%m-%d %H:%M")
 
     text = (
@@ -539,7 +743,9 @@ def scan_date(
     df,
     symbol_name,
     target_date,
-    debug=False
+    debug=False,
+    vol_threshold=DEFAULT_VOL_THRESHOLD,
+    surge_ratio=VOLUME_SURGE_RATIO,
 ):
 
     print(
@@ -547,20 +753,13 @@ def scan_date(
     )
 
     # 历史模拟同样只使用已收盘K线
-    df = df[
-        df["confirm"] == "1"
-    ].copy().reset_index(drop=True)
+    df = df[df["confirm"] == "1"].copy().reset_index(drop=True)
 
     if debug:
-        debug_volume(df, target_date, symbol_name)
+        debug_volume(df, target_date, symbol_name, vol_threshold)
 
-    target_start = (
-        pd.Timestamp(target_date)
-    )
-
-    target_end = (
-        target_start + pd.Timedelta(days=1)
-    )
+    target_start = pd.Timestamp(target_date)
+    target_end = target_start + pd.Timedelta(days=1)
 
     log_file = (
         f"{symbol_name}_"
@@ -568,88 +767,75 @@ def scan_date(
     )
 
     total_volume = 0
-
-    total_amplitude = 0
+    total_volume_surge = 0
 
     out_lines = []
 
     # ------------------------------
     # 成交量信号扫描
     # ------------------------------
-
     for i in range(4, len(df)):
 
         k0 = df.iloc[i]
 
-        if not (
-            target_start <= k0["ts"] < target_end
-        ):
+        if not (target_start <= k0["ts"] < target_end):
             continue
 
         sub = df.iloc[:i + 1]
 
-        result = detect_volume_signal(sub)
+        result = detect_volume_signal(sub, threshold=vol_threshold)
 
         if result:
 
-            text = format_volume_signal(
-                k0,
-                result
-            )
-
-            out_lines.append(
-                text + "-" * 30 + "\n"
-            )
-
+            text = format_volume_signal(k0, result)
+            out_lines.append(text + "-" * 30 + "\n")
             total_volume += 1
 
+    # ------------------------------
+    # 成交量激增信号扫描（K0 >= K1*ratio）
+    # ------------------------------
+    for i in range(1, len(df)):
+
+        k0 = df.iloc[i]
+
+        if not (target_start <= k0["ts"] < target_end):
+            continue
+
+        sub = df.iloc[:i + 1]
+
+        result = detect_volume_surge_signal(sub, surge_ratio=surge_ratio)
+
+        if result:
+
+            text = format_volume_surge_signal(k0, result)
+            out_lines.append(text + "-" * 30 + "\n")
+            total_volume_surge += 1
 
     # ------------------------------
     # 输出文件
     # ------------------------------
+    with open(log_file, "w", encoding="utf-8") as f:
 
-    with open(
-        log_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        f.write(
-            f"=== {symbol_name} "
-            f"{target_date} 信号汇总 ===\n\n"
-        )
-
-        f.write(
-            f"成交量信号数量: {total_volume}\n"
-        )
-
-        f.write(
-            f"涨跌幅信号数量: {total_amplitude}\n\n"
-        )
+        f.write(f"=== {symbol_name} {target_date} 信号汇总 ===\n\n")
+        f.write(f"成交量信号阈值: {vol_threshold:.2f}x\n")
+        f.write(f"成交量激增阈值: {surge_ratio:.2f}x\n")
+        f.write(f"成交量信号数量: {total_volume}\n")
+        f.write(f"成交量激增信号数量: {total_volume_surge}\n\n")
 
         for line in out_lines:
             f.write(line)
 
     print("\n========== 模拟扫描结果 ==========")
-
     print(f"交易对: {symbol_name}")
-
     print(f"日期: {target_date}")
-
+    print(f"成交量信号阈值: {vol_threshold:.2f}x")
+    print(f"成交量激增阈值: {surge_ratio:.2f}x")
     print(f"成交量信号: {total_volume}")
-
-
-    print(f"总信号: {total_volume}")
-
+    print(f"成交量激增信号: {total_volume_surge}")
     print(f"结果文件: {log_file}")
 
     if out_lines:
-
-        print(
-            f"\n=== {symbol_name} "
-            f"{target_date} 信号明细 ==="
-        )
-
+        print(f"\n=== {symbol_name} {target_date} 信号明细 ===")
         for line in out_lines:
             print(line)
 
@@ -658,72 +844,45 @@ def scan_date(
 # 实时成交量诊断
 # ============================================================
 
-def debug_latest_volume(df, symbol_name):
+def debug_latest_volume(df, symbol_name, threshold=DEFAULT_VOL_THRESHOLD):
 
     if len(df) < 5:
         print("历史K线不足5根，无法检测")
         return
 
     k0 = df.iloc[-1]
-
     k1 = df.iloc[-2]
-
     k2 = df.iloc[-3]
-
     k3 = df.iloc[-4]
-
     k4 = df.iloc[-5]
 
-    sum_vol = (
-        k2["vol"]
-        + k3["vol"]
-        + k4["vol"]
-    )
-
-    ratio = (
-        k0["vol"] / sum_vol
-        if sum_vol > 0 else 0
-    )
+    sum_vol = k2["vol"] + k3["vol"] + k4["vol"]
+    ratio = k0["vol"] / sum_vol if sum_vol > 0 else 0
+    required = sum_vol * threshold
 
     print("\n========== 实时成交量诊断 ==========")
-
     print(f"交易对: {symbol_name}")
-
     print(f"K0 时间: {k0['ts']}")
-
     print(f"K0 收盘价: {k0['close']:,.2f}")
-
     print(f"K0 成交量: {k0['vol']:,.2f}")
-
     print(f"K1 时间: {k1['ts']}")
-
     print(f"K1 成交量: {k1['vol']:,.2f}")
-
     print(f"K2 时间: {k2['ts']}")
-
     print(f"K2 成交量: {k2['vol']:,.2f}")
-
     print(f"K3 时间: {k3['ts']}")
-
     print(f"K3 成交量: {k3['vol']:,.2f}")
-
     print(f"K4 时间: {k4['ts']}")
-
     print(f"K4 成交量: {k4['vol']:,.2f}")
-
     print("------------------------------------")
-
     print(f"K2+K3+K4: {sum_vol:,.2f}")
-
     print(f"K0成交量: {k0['vol']:,.2f}")
-
     print(f"成交量倍数: {ratio:.2f}x")
-
+    print(f"信号阈值: {threshold:.2f}x")
+    print(f"要求成交量: {required:,.2f}")
     print(
         f"检测结果: "
-        f"{'满足条件' if k0['vol'] >= sum_vol and sum_vol > 0 else '不满足条件'}"
+        f"{'满足条件' if k0['vol'] >= required and sum_vol > 0 else '不满足条件'}"
     )
-
     print("====================================\n")
 
 
@@ -731,89 +890,115 @@ def debug_latest_volume(df, symbol_name):
 # 实时成交量信号
 # ============================================================
 
-def check_volume_latest(df, symbol_name="BTC"):
+def check_volume_latest(
+    df,
+    symbol_name="BTC",
+    threshold=DEFAULT_VOL_THRESHOLD
+):
 
-    result = detect_volume_signal(df)
+    result = detect_volume_signal(df, threshold=threshold)
 
     if not result:
-
-        print(
-            f"{symbol_name} 最新已收盘K线无成交量信号"
-        )
-
+        print(f"{symbol_name} 最新已收盘K线无成交量信号")
         return
 
     k0 = result["k0"]
-
     now_ts = result["ts"]
 
     print(
         f"{symbol_name} 检测到成交量信号 "
-        f"{result['ratio']:.2f}倍"
+        f"{result['ratio']:.2f}倍（阈值 {threshold:.2f}x）"
     )
 
-    # 检查冷却
     if not allow_signal(
         "volume",
         symbol_name,
         now_ts,
         VOLUME_COOLDOWN
     ):
-
-        print(
-            f"{symbol_name} 成交量信号已经发送或处于冷却中"
-        )
-
+        print(f"{symbol_name} 成交量信号已经发送或处于冷却中")
         return
 
-    ts1 = (
-        k0["ts"] - timedelta(hours=1)
-    ).strftime("%m-%d %H:%M")
-
-    ts2 = k0["ts"].strftime("%m-%d %H:%M")
+    ts1 = (k0["ts"] - BAR_DURATION).strftime("%Y-%m-%d %H:%M")
+    ts2 = k0["ts"].strftime("%Y-%m-%d %H:%M")
 
     msg = f"📊 {symbol_name} 1H 成交量信号\n"
-
     msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
-
     msg += f"💰 价格: {k0['close']:,.2f}\n"
-
     msg += f"📉 涨跌幅: {k0['change_pct']:,.2f}%\n\n"
-
     msg += f"🔥 当前成交量: {result['k0_vol']:,.2f}\n"
-
     msg += f"⚡ 成交量倍数: {result['ratio']:.2f}x\n\n"
+    msg += f"K2+K3+K4: {result['sum_vol']:,.2f}\n"
+    msg += f"要求成交量: {result['required']:,.2f}\n"
+    msg += f"🔴 条件: K0 >= (K2+K3+K4) × {threshold:.2f}"
 
-    msg += (
-        f"K2+K3+K4: {result['sum_vol']:,.2f}\n"
-    )
+    if send_message(msg, symbol_name):
 
-    msg += "🔴 条件: K0 >= K2+K3+K4"
+        mark_signal_sent("volume", symbol_name, now_ts)
 
-    # 只有发送成功才记录状态
-    if send_message(msg):
+        log_file = f"{symbol_name}_1h_volume_signal.txt"
 
-        mark_signal_sent(
-            "volume",
-            symbol_name,
-            now_ts
-        )
-
-        log_file = (
-            f"{symbol_name}_1h_volume_signal.txt"
-        )
-
-        with open(
-            log_file,
-            "a",
-            encoding="utf-8"
-        ) as f:
-
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(msg + "\n\n")
 
-        print(
-            f"已发送 {symbol_name} 实时成交量信号"
-        )
+        print(f"已发送 {symbol_name} 实时成交量信号")
+
+
+# ============================================================
+# 实时成交量激增信号（K0 >= K1 × ratio）
+# ============================================================
+
+def check_volume_surge_latest(
+    df,
+    symbol_name="BTC",
+    surge_ratio=VOLUME_SURGE_RATIO
+):
+
+    result = detect_volume_surge_signal(df, surge_ratio=surge_ratio)
+
+    if not result:
+        print(f"{symbol_name} 最新已收盘K线无成交量激增信号")
+        return
+
+    k0 = result["k0"]
+    now_ts = result["ts"]
+
+    print(
+        f"{symbol_name} 检测到成交量激增信号 "
+        f"{result['ratio']:.2f}倍（阈值 {surge_ratio:.2f}x）"
+    )
+
+    if not allow_signal(
+        "volume_surge",
+        symbol_name,
+        now_ts,
+        VOLUME_COOLDOWN
+    ):
+        print(f"{symbol_name} 成交量激增信号已经发送或处于冷却中")
+        return
+
+    ts1 = (k0["ts"] - BAR_DURATION).strftime("%Y-%m-%d %H:%M")
+    ts2 = k0["ts"].strftime("%Y-%m-%d %H:%M")
+
+    msg = f"🚨 {symbol_name} 1H 成交量激增信号\n"
+    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
+    msg += f"💰 价格: {k0['close']:,.2f}\n"
+    msg += f"📉 涨跌幅: {k0['change_pct']:,.2f}%\n\n"
+    msg += f"🔥 当前成交量: {result['k0_vol']:,.2f}\n"
+    msg += f"📊 前1根成交量: {result['k1_vol']:,.2f}\n"
+    msg += f"⚡ 激增倍数: {result['ratio']:.2f}x\n\n"
+    msg += f"🔴 条件: K0 >= K1 × {surge_ratio:.2f}"
+
+    if send_message(msg, symbol_name):
+
+        mark_signal_sent("volume_surge", symbol_name, now_ts)
+
+        log_file = f"{symbol_name}_1h_volume_surge_signal.txt"
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(msg + "\n\n")
+
+        print(f"已发送 {symbol_name} 实时成交量激增信号")
 
 
 # ============================================================
@@ -823,34 +1008,25 @@ def check_volume_latest(df, symbol_name="BTC"):
 def debug_volume(
     df,
     target_date,
-    symbol_name="BTC"
+    symbol_name="BTC",
+    threshold=DEFAULT_VOL_THRESHOLD
 ):
 
     target_start = pd.Timestamp(target_date)
-
-    target_end = (
-        target_start + pd.Timedelta(minutes=15)
-    )
+    # 1H K线，诊断范围应为 1 小时（原脚本这里误用 minutes=15）
+    target_end = target_start + timedelta(hours=1)
 
     print(f"\n=== {symbol_name} 数据诊断 ===")
-
     print(f"总K线数: {len(df)}")
-
-    print(
-        f"数据范围: {df['ts'].min()} ~ {df['ts'].max()}"
-    )
-
+    print(f"数据范围: {df['ts'].min()} ~ {df['ts'].max()}")
     print(f"目标日期: {target_date}")
+    print(f"成交量信号阈值: {threshold:.2f}x")
 
     if (
         df["ts"].max() < target_start
         or df["ts"].min() >= target_end
     ):
-
-        print(
-            f"目标日期 {target_date} 不在数据范围内"
-        )
-
+        print(f"目标日期 {target_date} 不在数据范围内")
         return
 
     print(
@@ -872,31 +1048,20 @@ def debug_volume(
 
         k0 = df.iloc[i]
 
-        if not (
-            target_start <= k0["ts"] < target_end
-        ):
+        if not (target_start <= k0["ts"] < target_end):
             continue
 
         k2 = df.iloc[i - 2]
-
         k3 = df.iloc[i - 3]
-
         k4 = df.iloc[i - 4]
 
-        sum_vol = (
-            k2["vol"]
-            + k3["vol"]
-            + k4["vol"]
-        )
-
-        ratio = (
-            k0["vol"] / sum_vol
-            if sum_vol > 0 else 0
-        )
+        sum_vol = k2["vol"] + k3["vol"] + k4["vol"]
+        ratio = k0["vol"] / sum_vol if sum_vol > 0 else 0
+        required = sum_vol * threshold
 
         ok = (
             "是"
-            if sum_vol > 0 and k0["vol"] >= sum_vol
+            if sum_vol > 0 and k0["vol"] >= required
             else "否"
         )
 
@@ -915,70 +1080,45 @@ def debug_volume(
 # 实时模式
 # ============================================================
 
-def run_live(df, symbol_name):
+def run_live(
+    df,
+    symbol_name,
+    vol_threshold=DEFAULT_VOL_THRESHOLD,
+    surge_ratio=VOLUME_SURGE_RATIO,
+):
 
     print("\n========== 实时监控 ==========")
-
     print(f"交易对: {symbol_name}")
-
+    print(f"成交量信号阈值: {vol_threshold:.2f}x")
+    print(f"成交量激增阈值: {surge_ratio:.2f}x")
     print(f"原始K线数量: {len(df)}")
 
-    # 统计未收盘K线
-    unclosed = df[
-        df["confirm"] != "1"
-    ]
-
+    unclosed = df[df["confirm"] != "1"]
     print(f"未收盘K线数量: {len(unclosed)}")
 
-    # 只保留已收盘K线
-    closed_df = df[
-        df["confirm"] == "1"
-    ].copy()
-
-    closed_df = (
-        closed_df.sort_values("ts")
-        .reset_index(drop=True)
-    )
+    closed_df = df[df["confirm"] == "1"].copy()
+    closed_df = closed_df.sort_values("ts").reset_index(drop=True)
 
     if len(closed_df) < 6:
-
         print("已收盘K线不足6根，无法检测")
-
         return
 
-    print(
-        f"已收盘K线数量: {len(closed_df)}"
-    )
+    print(f"已收盘K线数量: {len(closed_df)}")
 
     latest = closed_df.iloc[-1]
-
-    print(
-        f"最新已收盘K线: {latest['ts']}"
-    )
-
-    print(
-        f"最新收盘价格: {latest['close']:,.2f}"
-    )
-
-    print(
-        f"最新成交量: {latest['vol']:,.2f}"
-    )
-
-    print(
-        f"最新涨跌幅: {latest['change_pct']:+.2f}%"
-    )
+    print(f"最新已收盘K线: {latest['ts']}")
+    print(f"最新收盘价格: {latest['close']:,.2f}")
+    print(f"最新成交量: {latest['vol']:,.2f}")
+    print(f"最新涨跌幅: {latest['change_pct']:+.2f}%")
 
     # 实时成交量诊断
-    debug_latest_volume(
-        closed_df,
-        symbol_name
-    )
+    debug_latest_volume(closed_df, symbol_name, vol_threshold)
 
     # 检测成交量信号
-    check_volume_latest(
-        closed_df,
-        symbol_name
-    )
+    check_volume_latest(closed_df, symbol_name, vol_threshold)
+
+    # 检测成交量激增信号
+    check_volume_surge_latest(closed_df, symbol_name, surge_ratio)
 
     print("\n========== 实时检测完成 ==========")
 
@@ -1020,6 +1160,26 @@ def parse_args():
         help="显示历史成交量诊断"
     )
 
+    parser.add_argument(
+        "--vol-threshold",
+        type=float,
+        default=DEFAULT_VOL_THRESHOLD,
+        help=(
+            "成交量信号阈值：K0 >= (K2+K3+K4) × 阈值\n"
+            f"默认 {DEFAULT_VOL_THRESHOLD:.1f}（即 K0 >= K2+K3+K4）"
+        )
+    )
+
+    parser.add_argument(
+        "--surge-ratio",
+        type=float,
+        default=VOLUME_SURGE_RATIO,
+        help=(
+            "成交量激增信号阈值：K0 >= K1 × 阈值\n"
+            f"默认 {VOLUME_SURGE_RATIO:.1f}"
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -1031,116 +1191,105 @@ def main():
 
     args = parse_args()
 
+    # 每次运行前清理超过 LOG_RETENTION_DAYS 天的日志
+    cleanup_old_logs(LOG_RETENTION_DAYS)
+
     symbol = args.symbol.upper()
 
     if symbol not in SYMBOL_MAP:
-
         print(f"不支持的交易对: {symbol}")
-
         print(
             f"支持的交易对: {', '.join(SYMBOL_MAP.keys())}"
         )
-
         sys.exit(1)
 
     inst_id = SYMBOL_MAP[symbol]
+    bar = BAR_INTERVAL
 
-    bar = "1H"
+    vol_threshold = args.vol_threshold
+    surge_ratio = args.surge_ratio
+
+    if vol_threshold <= 0:
+        print("--vol-threshold 必须大于 0")
+        sys.exit(1)
+
+    if surge_ratio <= 0:
+        print("--surge-ratio 必须大于 0")
+        sys.exit(1)
 
     print("=" * 60)
-
     print(f"{symbol} {bar} 策略启动")
-
     print(f"交易对: {inst_id}")
-
     print(
         f"北京时间: {datetime.utcnow() + timedelta(hours=8)}"
     )
 
-    mode = (
-        "实时模式"
-        if args.live
-        else "模拟模式"
-    )
-
+    mode = "实时模式" if args.live else "模拟模式"
     print(f"运行模式: {mode}")
 
     # 日期处理
     if args.date:
-
         try:
-
             target_date = datetime.strptime(
                 args.date,
                 "%Y-%m-%d"
             ).date()
-
         except ValueError:
-
-            print(
-                f"--date 格式错误: {args.date}"
-            )
-
+            print(f"--date 格式错误: {args.date}")
             sys.exit(1)
-
     else:
-
         target_date = (
             datetime.utcnow() + timedelta(hours=8)
         ).date()
 
     if not args.live:
-
         print(f"目标日期: {target_date}")
+
+    print(f"成交量信号阈值: {vol_threshold:.2f}x")
+    print(f"成交量激增阈值: {surge_ratio:.2f}x")
+
+    # 显示当前交易对使用的 Chat ID
+    chat_id = get_chat_id(symbol)
+    if chat_id:
+        print(f"Telegram Chat ID: {chat_id} ({symbol})")
+    else:
+        print(f"Telegram Chat ID: 未配置 ({symbol})")
 
     print("=" * 60)
 
     try:
-
         # 获取K线
-        df = get_candles(
-            inst_id,
-            bar
-        )
+        df = get_candles(inst_id, bar)
 
         if df.empty:
-
             print("没有获取到K线数据")
-
             return
 
         # 指标计算
         df = add_indicators(df)
 
-        print(
-            f"获取K线数量: {len(df)}"
-        )
+        print(f"获取K线数量: {len(df)}")
 
         # 实时模式
         if args.live:
-
-            run_live(
-                df,
-                symbol
-            )
+            run_live(df, symbol, vol_threshold, surge_ratio)
 
         # 模拟模式
         else:
-
             scan_date(
                 df,
                 symbol,
                 target_date,
-                debug=args.debug
+                debug=args.debug,
+                vol_threshold=vol_threshold,
+                surge_ratio=surge_ratio,
             )
 
     except Exception as e:
-
         print(f"运行出错: {e}")
-
         traceback.print_exc()
 
 
 if __name__ == "__main__":
-    # send_message("OKX 1H 策略启动成功")
+    # send_message("OKX 1H 策略启动成功", "BTC")
     main()
