@@ -1,0 +1,21 @@
+sleep 7
+cd /root/timor-web3/okx_monitor
+/www/server/pyporject_evn/timor-web3/bin/python okx_15m.py BTC --live
+
+sleep 3
+/www/server/pyporject_evn/timor-web3/bin/python okx_15m.py ZEC --live
+
+sleep 2
+/www/server/pyporject_evn/timor-web3/bin/python okx_15m.py XNVDA --live --vol-threshold 2.5
+
+sleep 2
+/www/server/pyporject_evn/timor-web3/bin/python okx_15m.py XSNDK --live --vol-threshold 2.5
+
+sleep 1
+/www/server/pyporject_evn/timor-web3/bin/python okx_15m.py XQQQ --live --vol-threshold 2.5
+
+
+
+
+cd /root/timor-web3/okx_monitor
+/www/server/pyporject_evn/timor-web3/bin/python okx_1h.py BTC --live
