@@ -611,7 +611,6 @@ def main():
             now = now_ms()
             if now < entry_ms:
                 wait_s = (entry_ms - now) // 1000
-                print(f"[{dual_str(closed_ts)}] 布林方向={signal}，等待 {wait_s}s 至入场时刻 {dual_str(entry_ms)}")
                 time.sleep(min(args.poll_interval, max(1, wait_s)))
                 continue
 
