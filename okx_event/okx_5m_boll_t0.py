@@ -109,9 +109,9 @@ def chain_on_loss(chain, base_stake, max_losses, last_contracts=None):
         chain["stake"] = float(base_stake)
     else:
         if last_contracts is not None and last_contracts > 0:
-            chain["stake"] = float(last_contracts * 2 + base_stake)
+            chain["stake"] = float(last_contracts * 3 + base_stake)
         else:
-            chain["stake"] = chain["stake"] * 2 + float(base_stake)
+            chain["stake"] = chain["stake"] * 3 + float(base_stake)
     return peak
 
 
@@ -476,7 +476,7 @@ def settle_pending_orders(state, exchange, symbol, base_stake, max_losses):
         last_contracts = int(order.get("filled_contracts") or order["contracts"])
         peak = chain_on_loss(chain, base_stake, max_losses, last_contracts=last_contracts)
         result_str = "LOSS"
-        print(f"  上笔张数={last_contracts}，下一笔 stake = {last_contracts}*2 + {base_stake}")
+        print(f"  上笔张数={last_contracts}，下一笔 stake = {last_contracts}*3 + {base_stake}")
         if peak >= max_losses:
             print(f"  连亏 {peak} 次触顶，链重置为 base={base_stake}")
         else:
@@ -628,7 +628,7 @@ def main():
     print(f"下单方式: 限价单 @ {args.limit_price}，每 {args.check_interval}s 探测，{args.timeout}s 未成交撤单")
     print(f"待结算: {len(state['pending_orders'])}（最多 1 笔）")
     print(f"连亏重置: {args.max_losses}, 单笔上限: {args.max_stake}")
-    print(f"翻倍规则: 上笔张数*2+base，连亏{args.max_losses}次重置")
+    print(f"翻倍规则: 上笔张数*3+base，连亏{args.max_losses}次重置")
     print("=" * 65)
 
     while True:
