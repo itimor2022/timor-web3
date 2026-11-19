@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-OKX 事件合约 BTC 5分钟布林线自动交易（T+1 第3分30秒确认方向后市价下单）
+OKX 事件合约 BTC 5分钟布林线自动交易（T+1 第2分钟确认方向后限价0.8挂单，每30秒探测成交）
 UTC + 北京时间双显示版
 —— 单链 + 同时仅允许 1 笔未结算订单版
 
@@ -11,12 +11,19 @@ UTC + 北京时间双显示版
 2. 实体完全在布林中轨上方 -> 预期 UP
    实体完全在布林中轨下方 -> 预期 DOWN
    实体穿越或触碰中轨 -> 不交易
-3. 等到 T+1 这根 K 线的第 3 分 30 秒（即 T 收盘后 +3.5 分钟），
+3. 等到 T+1 这根 K 线的第 2 分钟（即 T 收盘后 +2 分钟），
    取当前正在进行的 5 分钟 K 线（T+1），计算当前涨跌：
        当前 close > T close -> 当前为涨
        当前 close < T close -> 当前为跌
-4. 只有当"当前涨跌方向"与布林预期方向一致时，才按该方向市价下单
-5. 市价单成交后，等待 T+1 收盘结算（T+1 close vs T close）
+4. 只有当"当前涨跌方向"与布林预期方向一致时，才按该方向限价 0.8 挂单
+5. 限价单成交后，等待 T+1 收盘结算（T+1 close vs T close）
+
+限价单轮询模式：
+- 限价单，价格 = --limit-price（默认 0.8）
+- 下单后进入 pending_orders，每 --check-interval 秒（默认 30）探测一次成交状态
+- 成交则打印成交日志，保留 pending，等待结算（成交后不再探测）
+- 超过 --timeout（默认 30）仍未成交，主动撤单，本笔作废
+- 撤单后链状态不变，下一根信号可重新尝试
 
 单链 + 单订单：
 - 只有一条 StakeChain，记录 stake / losses / wins
@@ -26,7 +33,8 @@ UTC + 北京时间双显示版
 - 单链连亏达到 --max-losses 时，链重置为 base
 
 翻倍规则：
-- 亏损时：下一笔 stake = 上笔成交张数 * 2 + base
+- 亏损时：下一笔 stake = 上笔张数 * 2 + base
+- 上笔张数取 filled_contracts（实际成交张数），无则取下单张数
 - 连亏达到 max-losses 时链重置为 base
 
 结算（T+0）：
@@ -55,7 +63,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = "https://www.okx.com"
-STATE_FILE = Path(__file__).resolve().parent / "5m_boll_t1_market_state.json"
+STATE_FILE = Path(__file__).resolve().parent / "5m_boll_t1_limit_poll_state.json"
 
 API_KEY = os.getenv("OKX_API_KEY", "")
 SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
@@ -64,7 +72,8 @@ PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 BAR_MS = 5 * 60 * 1000
-ENTRY_OFFSET_MS = 3 * 60 * 1000 + 30 * 1000  # T+1 第 3 分 30 秒
+ENTRY_OFFSET_MS = 2 * 60 * 1000  # T+1 第 2 分钟
+LIMIT_PRICE = 0.8                # 限价 0.8
 
 
 # ============================================================
@@ -193,33 +202,50 @@ def match_contract_by_signal_time(markets, signal_ts_ms, skip=0):
     return candidates[skip][1], candidates[skip][0]
 
 
-def place_event_order_market(inst_id, outcome, contracts):
-    """市价单"""
+def place_event_order_limit(inst_id, outcome, contracts, limit_price):
+    """普通限价单，挂单等待成交"""
     if outcome not in ("yes", "no"):
         raise ValueError(f"非法 outcome: {outcome}")
     if contracts <= 0:
         raise ValueError("下单数量必须大于0")
 
     path = "/api/v5/trade/order"
-    cl_ord_id = hashlib.md5(f"{inst_id}_{outcome}_{contracts}_{now_ms()}".encode()).hexdigest()[:32]
+    cl_ord_id = hashlib.md5(f"{inst_id}_{outcome}_{contracts}_{limit_price}_{now_ms()}".encode()).hexdigest()[:32]
 
     payload = {
         "instId": inst_id,
         "tdMode": "isolated",
         "clOrdId": cl_ord_id,
         "side": "buy",
-        "ordType": "market",
+        "ordType": "limit",
+        "px": str(limit_price),
         "sz": str(contracts),
         "outcome": outcome,
         "speedBump": "1",
     }
 
-    print("\n========== 市价下单 ==========")
+    print("\n========== 限价挂单 ==========")
     data = _request("POST", path, payload)
     result = data["data"][0]
     if result.get("sCode") != "0":
         raise RuntimeError(f"下单失败: sCode={result.get('sCode')}, sMsg={result.get('sMsg')}")
     return result
+
+
+def cancel_event_order(inst_id, ord_id):
+    """撤销事件合约订单"""
+    path = "/api/v5/trade/cancel-order"
+    payload = {"instId": inst_id, "ordId": ord_id}
+    try:
+        data = _request("POST", path, payload)
+        result = data["data"][0]
+        if result.get("sCode") != "0":
+            print(f"  [撤单返回] sCode={result.get('sCode')}, sMsg={result.get('sMsg')}")
+            return False
+        return True
+    except Exception as e:
+        print(f"  [撤单异常] {e}")
+        return False
 
 
 def get_event_order(inst_id, ord_id):
@@ -264,10 +290,7 @@ def get_boll_signal(exchange, symbol, period):
 
 
 def get_live_bar_direction(exchange, symbol, t_close_price):
-    """
-    取当前正在进行的 5 分钟 K 线（T+1），与 T 收盘价比较得出当前方向。
-    返回 "UP" / "DOWN" / None（未取到数据）
-    """
+    """取当前正在进行的 5 分钟 K 线（T+1），与 T 收盘价比较得出当前方向。"""
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe="5m", limit=3)
     if not ohlcv:
         return None
@@ -312,51 +335,82 @@ def save_state(state):
 
 
 # ============================================================
-# 市价单成交查询
+# 限价单成交轮询（每 30 秒探测一次，成交打印日志）
 # ============================================================
 
-def check_order_filled(state):
-    """查询 pending 中订单是否已成交（市价单一般立即成交，最多查一次）"""
+def poll_order_fill(state, args):
+    """
+    对 pending 中的限价单每 30 秒探测一次成交状态。
+    - 已成交：打印成交日志，标记 _filled，不再查询，等待结算
+    - 超时未成交：撤单，从 pending 移除，链不变
+    - 部分成交：视为已成交，按实际成交张数记录
+    返回 True 表示本轮做了操作（调用方应 continue 跳过后续下单）
+    """
     if not state["pending_orders"]:
         return False
+
     order = state["pending_orders"][0]
+
+    # 已成交：不再轮询，等待结算即可
     if order.get("_filled") or order.get("_dry_filled"):
         return False
 
     ord_id = order.get("ord_id")
     if not ord_id or ord_id == "DRY_RUN":
-        order["_dry_filled"] = True
-        order["filled_contracts"] = order["contracts"]
-        print(f"  [DRY RUN] 模拟成交 {order['filled_contracts']} 张")
-        save_state(state)
-        return True
+        if not order.get("_dry_filled"):
+            order["_dry_filled"] = True
+            order["filled_contracts"] = order["contracts"]
+            order["filled_price"] = order.get("limit_price")
+            print(f"  ✅ [DRY RUN 成交] 模拟成交 {order['filled_contracts']} 张 @ {order.get('limit_price')}")
+            save_state(state)
+        return False
+
+    timeout_ms = order.get("timeout_ms", 30_000)
+    elapsed = now_ms() - order.get("created_at_ms", now_ms())
+    elapsed_s = elapsed / 1000
 
     try:
         raw = get_event_order(order["inst_id"], ord_id)
     except Exception as e:
-        print(f"  [查询异常] {e}")
+        print(f"  [探测异常] ordId={ord_id} err={e}")
         return False
 
     if raw is None:
+        print(f"  [探测] ordId={ord_id} 订单暂未返回，已等待 {elapsed_s:.0f}s")
         return False
 
-    state_str = raw.get("state")
+    state_str = raw.get("state")  # live / filled / partially_filled / canceled
     filled = raw.get("accFillSz") or raw.get("fillSz") or "0"
+    avg_px = raw.get("avgPx") or raw.get("fillPx") or order.get("limit_price")
 
+    # 已成交（完全或部分）：打印成交日志，进入等待结算
     if state_str in ("filled", "partially_filled") and float(filled) > 0:
         order["filled_contracts"] = int(float(filled))
+        order["filled_price"] = float(avg_px) if avg_px else order.get("limit_price")
         order["_filled"] = True
-        print(f"  [成交] ordId={ord_id}, 成交 {order['filled_contracts']} 张，等待 T+1 收盘结算")
+        print(f"  ✅ [成交] ordId={ord_id} | 方向={order.get('outcome')} | "
+              f"成交 {order['filled_contracts']} 张 @ {order['filled_price']} | "
+              f"挂单价={order.get('limit_price')} | 耗时 {elapsed_s:.0f}s | 状态={state_str}")
         save_state(state)
         return True
 
-    # 市价单如被拒绝/取消，移出 pending
-    if state_str in ("canceled", "filled_canceled"):
-        print(f"  [订单结束] ordId={ord_id} state={state_str}")
+    if state_str == "canceled":
+        print(f"  ❌ [已取消] ordId={ord_id}，移出 pending（链不变）")
         state["pending_orders"] = []
         save_state(state)
         return True
 
+    # 仍为 live：检查超时
+    if elapsed >= timeout_ms:
+        print(f"  ⏱ [超时 {elapsed_s:.0f}s] 撤单 ordId={ord_id}")
+        ok = cancel_event_order(order["inst_id"], ord_id)
+        print(f"  [撤单结果] {'成功' if ok else '失败'} | 本笔作废，链不变")
+        state["pending_orders"] = []
+        save_state(state)
+        return True
+
+    remain = (timeout_ms - elapsed) / 1000
+    print(f"  ⏳ [探测] ordId={ord_id} 挂单中 | 已等待 {elapsed_s:.0f}s | 剩余 {remain:.0f}s 超时 | 限价={order.get('limit_price')}")
     return False
 
 
@@ -376,7 +430,7 @@ def settle_pending_orders(state, exchange, symbol, base_stake, max_losses):
         return
     order = state["pending_orders"][0]
     if not (order.get("_filled") or order.get("_dry_filled")):
-        return
+        return  # 还没成交，等轮询
 
     klines = get_klines(exchange, symbol, limit=40)
     if len(klines) < 2:
@@ -394,7 +448,7 @@ def settle_pending_orders(state, exchange, symbol, base_stake, max_losses):
         return
 
     if idx + 1 >= closed_count:
-        return
+        return  # T+1 还没收盘
 
     t_close = float(klines[idx][4])
     t1_close = float(klines[idx + 1][4])
@@ -442,7 +496,7 @@ def get_klines(exchange, symbol, limit=20):
 
 
 # ============================================================
-# 下单：确认方向后下市价单
+# 下单：限价挂单，进入 pending 后由轮询处理
 # ============================================================
 
 def try_place_order(state, exchange, args, signal, closed_ts):
@@ -457,7 +511,7 @@ def try_place_order(state, exchange, args, signal, closed_ts):
         return False
 
     outcome = args.up_outcome if signal == "UP" else args.down_outcome
-    print(f"  stake={stake}, outcome={outcome}")
+    print(f"  stake={stake}, outcome={outcome}, 限价={args.limit_price}")
 
     markets = get_live_markets(args.series_id)
     if not markets:
@@ -483,13 +537,13 @@ def try_place_order(state, exchange, args, signal, closed_ts):
 
     ord_id = None
     if not args.live:
-        print(f"  [DRY RUN] 市价 {outcome}, {contracts}张")
+        print(f"  [DRY RUN] 限价挂单 {outcome}, {contracts}张 @ {args.limit_price}")
         ord_id = "DRY_RUN"
     else:
-        print(f"  [LIVE] 市价 {outcome}, {contracts}张")
-        result = place_event_order_market(inst_id, outcome, contracts)
+        print(f"  [LIVE] 限价挂单 {outcome}, {contracts}张 @ {args.limit_price}")
+        result = place_event_order_limit(inst_id, outcome, contracts, args.limit_price)
         ord_id = result.get("ordId")
-        print(f"  <下单成功> ordId={ord_id}")
+        print(f"  <挂单成功> ordId={ord_id}")
 
     order = {
         "inst_id": inst_id,
@@ -499,16 +553,20 @@ def try_place_order(state, exchange, args, signal, closed_ts):
         "signal_ts": int(closed_ts),
         "stake": stake,
         "contracts": contracts,
+        "limit_price": args.limit_price,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_at_ms": now_ms(),
         "exp_time_ms": int(exp_ms),
+        "timeout_ms": args.timeout * 1000,
         "_filled": False,
         "_dry_filled": False,
     }
     state["pending_orders"].append(order)
 
-    print_status("已下单", state, {
-        "合约": inst_id, "方向": outcome, "张数": contracts, "订单号": ord_id,
+    print_status("已挂单", state, {
+        "合约": inst_id, "方向": outcome, "张数": contracts,
+        "限价": args.limit_price, "订单号": ord_id,
+        "探测间隔": f"{args.check_interval}s", "超时": f"{args.timeout}s",
     })
     save_state(state)
     return True
@@ -519,7 +577,7 @@ def try_place_order(state, exchange, args, signal, closed_ts):
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="OKX事件合约5分钟布林线（T+1 3分30秒确认方向后市价下单）")
+    parser = argparse.ArgumentParser(description="OKX事件合约5分钟布林线（T+1 2分钟确认方向后限价0.8挂单，每30秒探测）")
     parser.add_argument("--series-id", default="BTC-UPDOWN-5MIN")
     parser.add_argument("--symbol", default="BTC/USDT")
     parser.add_argument("--period", type=int, default=20)
@@ -527,14 +585,20 @@ def main():
     parser.add_argument("--base", type=float, default=1.0)
     parser.add_argument("--max-losses", type=int, default=10)
     parser.add_argument("--max-stake", type=float, default=1000.0)
+    parser.add_argument("--limit-price", type=float, default=LIMIT_PRICE, help="限价，默认0.8")
+    parser.add_argument("--check-interval", type=int, default=30, help="探测间隔秒数，默认30")
+    parser.add_argument("--timeout", type=int, default=30, help="限价单超时秒数，默认30")
     parser.add_argument("--up-outcome", choices=["yes", "no"], default="yes")
     parser.add_argument("--down-outcome", choices=["yes", "no"], default="no")
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--poll-interval", type=int, default=15, help="主循环轮询间隔秒")
+    parser.add_argument("--poll-interval", type=int, default=15, help="主循环轮询间隔")
     args = parser.parse_args()
 
     if args.period < 2: sys.exit("周期>=2")
     if args.base <= 0: sys.exit("base>0")
+    if not (0.01 <= args.limit_price <= 0.99): sys.exit("limit-price 0.01~0.99")
+    if args.check_interval < 1: sys.exit("check-interval>=1")
+    if args.timeout < 10: sys.exit("timeout>=10")
     if args.live and not all([API_KEY, SECRET_KEY, PASSPHRASE]):
         sys.exit("LIVE需要API密钥")
 
@@ -559,9 +623,9 @@ def main():
     print(f"模式: {'LIVE' if args.live else 'DRY RUN'}")
     print(f"系列: {args.series_id}, 品种: {args.symbol}")
     print(f"布林: 周期={args.period}, 标准差={args.std}")
-    print(f"基础投注: {args.base}")
-    print(f"入场时机: T+1 第 3 分 30 秒，需当前方向与布林方向一致")
-    print(f"下单方式: 市价单")
+    print(f"基础投注: {args.base}, 限价: {args.limit_price}")
+    print(f"入场时机: T+1 第 2 分钟，需当前方向与布林方向一致")
+    print(f"下单方式: 限价单 @ {args.limit_price}，每 {args.check_interval}s 探测，{args.timeout}s 未成交撤单")
     print(f"待结算: {len(state['pending_orders'])}（最多 1 笔）")
     print(f"连亏重置: {args.max_losses}, 单笔上限: {args.max_stake}")
     print(f"翻倍规则: 上笔张数*2+base，连亏{args.max_losses}次重置")
@@ -569,15 +633,15 @@ def main():
 
     while True:
         try:
-            # 1) 检查 pending 市价单是否成交
-            check_order_filled(state)
+            # 1) 轮询 pending 限价单的成交状态（每 30 秒探测一次）
+            poll_order_fill(state, args)
 
             # 2) 结算已成交且 T+1 已收盘的订单
             settle_pending_orders(state, exchange, args.symbol, args.base, args.max_losses)
 
-            # 3) 仍有 pending -> 不下新单
+            # 3) 仍有 pending（挂单中或等待结算）-> 不下新单
             if state["pending_orders"]:
-                time.sleep(args.poll_interval)
+                time.sleep(args.check_interval)
                 continue
 
             # 4) 链可下注检查
@@ -600,13 +664,12 @@ def main():
 
             if signal is None:
                 print(f"[{dual_str(closed_ts)}] 布林无信号（穿越/触碰中轨或数据不足）")
-                # 无信号也标记已处理，避免重复打印
                 state["last_processed_ts"] = closed_ts
                 save_state(state)
                 time.sleep(args.poll_interval)
                 continue
 
-            # 6) 等待到 T+1 第 3 分 30 秒
+            # 6) 等待到 T+1 第 2 分钟
             entry_ms = closed_ts + BAR_MS + ENTRY_OFFSET_MS
             now = now_ms()
             if now < entry_ms:
@@ -614,10 +677,8 @@ def main():
                 time.sleep(min(args.poll_interval, max(1, wait_s)))
                 continue
 
-            # 已过入场时刻仍未下单（例如进程刚启动），直接检查是否可入场
-            # 当前仍在 T+1 这根 K 线内才有效
+            # 已进入 T+2，本信号过期
             if now >= closed_ts + 2 * BAR_MS:
-                # 已进入 T+2，本信号过期
                 print(f"[{dual_str(closed_ts)}] 信号已过期（当前已超过 T+1 区间）")
                 state["last_processed_ts"] = closed_ts
                 save_state(state)
@@ -638,14 +699,13 @@ def main():
                 time.sleep(args.poll_interval)
                 continue
 
-            # 8) 方向一致，市价下单
-            print(f"\n[{dual_str(closed_ts)}] 方向确认: 布林={signal}, 当前={live_dir} -> 市价 {signal}")
+            # 8) 方向一致，限价 0.8 挂单
+            print(f"\n[{dual_str(closed_ts)}] 方向确认: 布林={signal}, 当前={live_dir} -> 限价 {args.limit_price} 买 {signal}")
             ok = try_place_order(state, exchange, args, signal, closed_ts)
             if ok:
                 state["last_processed_ts"] = closed_ts
                 save_state(state)
             else:
-                # 下失败也标记已处理，避免同一根反复重试
                 state["last_processed_ts"] = closed_ts
                 save_state(state)
 
