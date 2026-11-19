@@ -109,9 +109,9 @@ def chain_on_loss(chain, base_stake, max_losses, last_contracts=None):
         chain["stake"] = float(base_stake)
     else:
         if last_contracts is not None and last_contracts > 0:
-            chain["stake"] = float(last_contracts * 3 + base_stake)
+            chain["stake"] = float(last_contracts * 1 + base_stake)
         else:
-            chain["stake"] = chain["stake"] * 3 + float(base_stake)
+            chain["stake"] = chain["stake"] * 1 + float(base_stake)
     return peak
 
 
