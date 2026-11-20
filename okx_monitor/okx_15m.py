@@ -87,10 +87,16 @@ VOLUME_COOLDOWN = timedelta(minutes=15)
 AMPLITUDE_COOLDOWN = timedelta(minutes=15)
 
 # 成交量信号默认阈值：K0 >= (K2+K3+K4) × 阈值
-DEFAULT_VOL_THRESHOLD = 1.0
+DEFAULT_VOL_THRESHOLD = 1.15
 
 # 成交量激增倍数阈值：K0 >= K1 × 阈值
 VOLUME_SURGE_RATIO = 3.5
+
+# 实体突破信号：K0 实体 > 前20根每一根的实体
+BODY_BREAK_LOOKBACK = 20
+
+# 实体信号最小涨跌幅过滤（%），避免小实体噪音
+BODY_MIN_CHANGE_PCT = 0.6
 
 # 日志保留天数
 LOG_RETENTION_DAYS = 3
@@ -289,8 +295,9 @@ def cleanup_old_logs(retention_days=LOG_RETENTION_DAYS):
 
     # ---------- 2. 持续追加的实时日志 ----------
     append_suffixes = (
-        "_15m_volume_signal.txt",
+       "_15m_volume_signal.txt",
         "_15m_volume_surge_signal.txt",
+        "_15m_body_break_signal.txt",
     )
 
     # 匹配 "⏰ 时间: 2026-11-04 14:00 ~ 2026-11-04 14:15"
@@ -518,6 +525,14 @@ def add_indicators(df):
     # 振幅
     df["amplitude"] = df["high"] - df["low"]
 
+    # K线实体
+    df["body"] = (df["close"] - df["open"]).abs()
+
+    # 前 N 根最大实体（shift(1) 排除当前K）
+    df["body_max_prev20"] = (
+        df["body"].shift(1).rolling(BODY_BREAK_LOOKBACK).max()
+    )
+
     return df
 
 
@@ -659,6 +674,52 @@ def detect_volume_surge_signal(df, surge_ratio=VOLUME_SURGE_RATIO):
 
     return None
 
+# ============================================================
+# 实体突破信号（K0 实体 > 前20根每一根实体）
+# ============================================================
+
+def detect_body_break_signal(
+    df,
+    lookback=BODY_BREAK_LOOKBACK,
+    min_change_pct=BODY_MIN_CHANGE_PCT
+):
+    """
+    实体突破信号：
+
+    K0 实体 > 前 lookback 根中每一根的实体（即 > 前N根最大实体）
+    且 |K0 涨跌幅| >= min_change_pct
+
+    K0 实体 = |close - open|
+    前N根最大实体不含 K0 本身（shift(1)）
+    """
+
+    if len(df) < lookback + 2:
+        return None
+
+    k0 = df.iloc[-1]
+
+    body = k0["body"]
+    body_max_prev = k0["body_max_prev20"]
+
+    if pd.isna(body) or pd.isna(body_max_prev) or body_max_prev <= 0:
+        return None
+
+    abs_change = abs(k0["change_pct"])
+
+    # 严格大于前20根中每一根
+    if body > body_max_prev and abs_change >= min_change_pct:
+
+        return {
+            "k0": k0,
+            "ts": k0["ts"],
+            "body": body,
+            "body_max_prev": body_max_prev,
+            "ratio": body / body_max_prev,
+            "change_pct": k0["change_pct"],
+        }
+
+    return None
+
 
 # ============================================================
 # 信号格式化
@@ -729,6 +790,28 @@ def format_amplitude_signal(k, result):
 
     return text
 
+
+def format_body_break_signal(k, result):
+
+    ts1 = (k["ts"] - BAR_DURATION).strftime("%m-%d %H:%M")
+    ts2 = k["ts"].strftime("%m-%d %H:%M")
+
+    text = (
+        f"{ts1} ~ {ts2} | "
+        f"{k['close']:,.2f} | "
+        f"{k['vol']:,.2f} | "
+        f"{k['change_pct']:,.2f}%\n"
+    )
+
+    text += (
+        f" - 实体突破信号: "
+        f"实体 {result['body']:,.2f} > "
+        f"前20最大 {result['body_max_prev']:,.2f} "
+        f"({result['ratio']:.2f}倍), "
+        f"涨跌幅 {result['change_pct']:.2f}%\n"
+    )
+
+    return text
 
 # ============================================================
 # 模拟模式：扫描指定日期
@@ -806,6 +889,28 @@ def scan_date(
             out_lines.append(text + "-" * 30 + "\n")
             total_volume_surge += 1
 
+
+    # ------------------------------
+    # 实体突破信号扫描
+    # ------------------------------
+    total_body_break = 0
+
+    for i in range(BODY_BREAK_LOOKBACK + 1, len(df)):
+
+        k0 = df.iloc[i]
+
+        if not (target_start <= k0["ts"] < target_end):
+            continue
+
+        sub = df.iloc[:i + 1]
+
+        result = detect_body_break_signal(sub)
+
+        if result:
+            text = format_body_break_signal(k0, result)
+            out_lines.append(text + "-" * 30 + "\n")
+            total_body_break += 1
+
     # ------------------------------
     # 输出文件
     # ------------------------------
@@ -815,6 +920,7 @@ def scan_date(
         f.write(f"成交量激增阈值: {surge_ratio:.2f}x\n")
         f.write(f"成交量信号数量: {total_volume}\n")
         f.write(f"成交量激增信号数量: {total_volume_surge}\n\n")
+        f.write(f"实体突破信号数量: {total_body_break}\n")
 
         for line in out_lines:
             f.write(line)
@@ -826,6 +932,7 @@ def scan_date(
     print(f"成交量激增阈值: {surge_ratio:.2f}x")
     print(f"成交量信号: {total_volume}")
     print(f"成交量激增信号: {total_volume_surge}")
+    print(f"实体突破信号: {total_body_break}")
     print(f"结果文件: {log_file}")
 
     if out_lines:
@@ -996,6 +1103,69 @@ def check_volume_surge_latest(
 
 
 # ============================================================
+# 实时实体突破信号
+# ============================================================
+
+def check_body_break_latest(
+    df,
+    symbol_name="BTC",
+    min_change_pct=BODY_MIN_CHANGE_PCT
+):
+
+    result = detect_body_break_signal(
+        df,
+        lookback=BODY_BREAK_LOOKBACK,
+        min_change_pct=min_change_pct
+    )
+
+    if not result:
+        print(f"{symbol_name} 最新已收盘K线无实体突破信号")
+        return
+
+    k0 = result["k0"]
+    now_ts = result["ts"]
+
+    print(
+        f"{symbol_name} 检测到实体突破信号 "
+        f"({result['ratio']:.2f}倍前20最大)"
+    )
+
+    if not allow_signal(
+        "body_break",
+        symbol_name,
+        now_ts,
+        VOLUME_COOLDOWN
+    ):
+        print(f"{symbol_name} 实体突破信号已经发送或处于冷却中")
+        return
+
+    ts1 = (k0["ts"] - BAR_DURATION).strftime("%Y-%m-%d %H:%M")
+    ts2 = k0["ts"].strftime("%Y-%m-%d %H:%M")
+
+    msg = f"💥 {symbol_name} 15m 实体突破信号\n"
+    msg += f"⏰ 时间: {ts1} ~ {ts2}\n"
+    msg += f"💰 价格: {k0['close']:,.2f}\n"
+    msg += f"📉 涨跌幅: {k0['change_pct']:+,.2f}%\n\n"
+    msg += f"📏 当前实体: {result['body']:,.2f}\n"
+    msg += f"📊 前20最大实体: {result['body_max_prev']:,.2f}\n"
+    msg += f"⚡ 突破倍数: {result['ratio']:.2f}x\n\n"
+    msg += (
+        f"🔴 条件: 实体 > 前20根每一根实体"
+        f" 且 |涨跌幅| >= {min_change_pct:.1f}%"
+    )
+
+    if send_message(msg, symbol_name):
+
+        mark_signal_sent("body_break", symbol_name, now_ts)
+
+        log_file = f"{symbol_name}_15m_body_break_signal.txt"
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(msg + "\n\n")
+
+        print(f"已发送 {symbol_name} 实时实体突破信号")
+
+# ============================================================
 # 历史成交量诊断
 # ============================================================
 
@@ -1113,6 +1283,9 @@ def run_live(
     # 检测成交量激增信号
     check_volume_surge_latest(closed_df, symbol_name, surge_ratio)
 
+    # 检测实体突破信号
+    check_body_break_latest(closed_df, symbol_name)
+
     print("\n========== 实时检测完成 ==========")
 
 
@@ -1170,6 +1343,16 @@ def parse_args():
         help=(
             "成交量激增信号阈值：K0 >= K1 × 阈值\n"
             f"默认 {VOLUME_SURGE_RATIO:.1f}"
+        )
+    )
+
+    parser.add_argument(
+        "--body-change-min",
+        type=float,
+        default=BODY_MIN_CHANGE_PCT,
+        help=(
+            "实体突破信号最小涨跌幅过滤（%%）\n"
+            f"默认 {BODY_MIN_CHANGE_PCT:.1f}"
         )
     )
 
